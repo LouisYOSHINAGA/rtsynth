@@ -13,6 +13,7 @@ bool StandaloneHost::start(const Options& options){
         std::cout << "MIDI input: " << midi_.openedPortName() << std::endl;
     }
 
+    audio_.setApi(options.audioApiName);
     const bool opened = audio_.open(
         options.audioDeviceId, options.sampleRate, options.bufferFrames,
         options.channels,
@@ -41,7 +42,8 @@ bool StandaloneHost::start(const Options& options){
         return false;
     }
 
-    std::cout << "Audio stream started: " << options.sampleRate << " Hz, "
+    std::cout << "Audio stream started: " << audio_.currentApiName() << ", "
+              << options.sampleRate << " Hz, "
               << audio_.actualBufferFrames() << " frames/block, "
               << options.channels << " ch" << std::endl;
     return true;

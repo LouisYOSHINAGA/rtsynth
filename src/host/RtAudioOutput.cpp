@@ -1,22 +1,59 @@
+#include <algorithm>
 #include <iostream>
 #include "RtAudioOutput.hpp"
 
 namespace rtsynth {
 
-RtAudioOutput::RtAudioOutput() : audio_(RtAudio::UNSPECIFIED){}
+RtAudio::Api RtAudioOutput::resolveApi(const std::string& apiName){
+    if(!apiName.empty()){
+        const RtAudio::Api api = RtAudio::getCompiledApiByName(apiName);
+        if(api != RtAudio::UNSPECIFIED){
+            return api;
+        }
+        std::cerr << "Audio API '" << apiName
+                  << "' is unknown or not compiled in; falling back to auto selection."
+                  << std::endl;
+    }
+
+#if defined(__linux__)
+    // Auto selection: prefer direct ALSA over a sound server. RtAudio's own
+    // UNSPECIFIED order (JACK -> Pulse -> ALSA) picks PulseAudio/PipeWire on
+    // desktop systems, which buffers on the server side and adds latency.
+    std::vector<RtAudio::Api> apis;
+    RtAudio::getCompiledApi(apis);
+    if(std::find(apis.begin(), apis.end(), RtAudio::LINUX_ALSA) != apis.end()){
+        RtAudio probe(RtAudio::LINUX_ALSA);
+        if(probe.getDeviceCount() > 0){
+            return RtAudio::LINUX_ALSA;
+        }
+    }
+#endif
+    return RtAudio::UNSPECIFIED;
+}
+
+RtAudio& RtAudioOutput::rt(){
+    if(audio_ == nullptr){
+        audio_ = std::make_unique<RtAudio>(resolveApi(requestedApi_));
+    }
+    return *audio_;
+}
+
+std::string RtAudioOutput::currentApiName(){
+    return RtAudio::getApiDisplayName(rt().getCurrentApi());
+}
 
 std::vector<AudioDeviceDesc> RtAudioOutput::listOutputDevices(){
     std::vector<AudioDeviceDesc> devices;
 #if RTSYNTH_RTAUDIO_6
-    for(unsigned int id : audio_.getDeviceIds()){
-        const RtAudio::DeviceInfo info = audio_.getDeviceInfo(id);
+    for(unsigned int id : rt().getDeviceIds()){
+        const RtAudio::DeviceInfo info = rt().getDeviceInfo(id);
         if(info.outputChannels > 0){
             devices.push_back({id, info.name, info.outputChannels, info.isDefaultOutput});
         }
     }
 #else
-    for(unsigned int i = 0; i < audio_.getDeviceCount(); i++){
-        const RtAudio::DeviceInfo info = audio_.getDeviceInfo(i);
+    for(unsigned int i = 0; i < rt().getDeviceCount(); i++){
+        const RtAudio::DeviceInfo info = rt().getDeviceInfo(i);
         if(info.probed && info.outputChannels > 0){
             devices.push_back({i, info.name, info.outputChannels, info.isDefaultOutput});
         }
@@ -26,7 +63,7 @@ std::vector<AudioDeviceDesc> RtAudioOutput::listOutputDevices(){
 }
 
 unsigned int RtAudioOutput::defaultOutputDevice(){
-    return audio_.getDefaultOutputDevice();
+    return rt().getDefaultOutputDevice();
 }
 
 bool RtAudioOutput::open(unsigned int deviceId, unsigned int sampleRate,
@@ -53,15 +90,15 @@ bool RtAudioOutput::open(unsigned int deviceId, unsigned int sampleRate,
     options.streamName = "rtsynth";
 
 #if RTSYNTH_RTAUDIO_6
-    if(audio_.openStream(&outputParams, nullptr, RTAUDIO_FLOAT32, sampleRate,
-                         &bufferFrames_, &rtCallback, this, &options) != RTAUDIO_NO_ERROR){
-        std::cerr << "Failed to open audio stream: " << audio_.getErrorText() << std::endl;
+    if(rt().openStream(&outputParams, nullptr, RTAUDIO_FLOAT32, sampleRate,
+                       &bufferFrames_, &rtCallback, this, &options) != RTAUDIO_NO_ERROR){
+        std::cerr << "Failed to open audio stream: " << rt().getErrorText() << std::endl;
         return false;
     }
 #else
     try{
-        audio_.openStream(&outputParams, nullptr, RTAUDIO_FLOAT32, sampleRate,
-                          &bufferFrames_, &rtCallback, this, &options);
+        rt().openStream(&outputParams, nullptr, RTAUDIO_FLOAT32, sampleRate,
+                        &bufferFrames_, &rtCallback, this, &options);
     }catch(const RtAudioError& e){
         std::cerr << "Failed to open audio stream: " << e.getMessage() << std::endl;
         return false;
@@ -73,14 +110,14 @@ bool RtAudioOutput::open(unsigned int deviceId, unsigned int sampleRate,
 
 bool RtAudioOutput::start(){
 #if RTSYNTH_RTAUDIO_6
-    if(audio_.startStream() != RTAUDIO_NO_ERROR){
-        std::cerr << "Failed to start audio stream: " << audio_.getErrorText() << std::endl;
+    if(rt().startStream() != RTAUDIO_NO_ERROR){
+        std::cerr << "Failed to start audio stream: " << rt().getErrorText() << std::endl;
         close();
         return false;
     }
 #else
     try{
-        audio_.startStream();
+        rt().startStream();
     }catch(const RtAudioError& e){
         std::cerr << "Failed to start audio stream: " << e.getMessage() << std::endl;
         close();
@@ -91,21 +128,24 @@ bool RtAudioOutput::start(){
 }
 
 void RtAudioOutput::close(){
+    if(audio_ == nullptr){
+        return;
+    }
 #if RTSYNTH_RTAUDIO_6
-    if(audio_.isStreamRunning()){
-        audio_.stopStream();
+    if(audio_->isStreamRunning()){
+        audio_->stopStream();
     }
 #else
     try{
-        if(audio_.isStreamRunning()){
-            audio_.stopStream();
+        if(audio_->isStreamRunning()){
+            audio_->stopStream();
         }
     }catch(const RtAudioError& e){
         std::cerr << "Error while stopping stream: " << e.getMessage() << std::endl;
     }
 #endif
-    if(audio_.isStreamOpen()){
-        audio_.closeStream();
+    if(audio_->isStreamOpen()){
+        audio_->closeStream();
     }
 }
 

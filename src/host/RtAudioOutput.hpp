@@ -2,6 +2,7 @@
 
 #include <atomic>
 #include <functional>
+#include <memory>
 #include <string>
 #include <vector>
 #include <RtAudio.h>
@@ -33,6 +34,14 @@ struct AudioDeviceDesc {
 // Thin host-side wrapper around RtAudio: device listing, stream lifetime,
 // and the RT callback. Audio is float32 / non-interleaved, so the callback
 // can hand the processor a planar AudioBufferView without copying.
+//
+// API (backend) selection matters for latency on Linux: RtAudio's own
+// auto-selection probes JACK -> PulseAudio -> ALSA and picks the first one
+// with devices, so on a desktop system it lands on PulseAudio/PipeWire —
+// whose RtAudio 5.x backend leaves the playback buffer size to the sound
+// server (requested buffer sizes are not honored), adding tens of ms of
+// latency. setApi("") therefore prefers *direct ALSA* when it has devices,
+// matching hardware-synth needs; pass "pulse", "jack", ... to override.
 class RtAudioOutput {
 public:
     // called on the audio thread once per block; must be RT-safe
@@ -42,7 +51,11 @@ public:
     // where 0 is a real device, so 0 cannot mean "default" there
     static constexpr unsigned int kUseDefaultDevice = ~0u;
 
-    RtAudioOutput();
+    // Select the backend by RtAudio API name ("alsa", "pulse", "jack",
+    // "core", ...); "" = auto (prefer direct ALSA on Linux, see above).
+    // Effective only before the first device/stream call.
+    void setApi(const std::string& apiName){ requestedApi_ = apiName; }
+    std::string currentApiName();
 
     std::vector<AudioDeviceDesc> listOutputDevices();
     unsigned int defaultOutputDevice();
@@ -63,7 +76,14 @@ private:
     static int rtCallback(void* outputBuffer, void* inputBuffer, unsigned int nFrames,
                           double streamTime, RtAudioStreamStatus status, void* userData);
 
-    RtAudio audio_;
+    static RtAudio::Api resolveApi(const std::string& apiName);
+
+    // the RtAudio instance is created on first use so setApi() can be
+    // called after construction (e.g. from parsed CLI options)
+    RtAudio& rt();
+
+    std::unique_ptr<RtAudio> audio_;
+    std::string requestedApi_;
     RenderCallback callback_;
     std::vector<float*> channelPointers_;
     unsigned int bufferFrames_ = 0;

@@ -1,6 +1,7 @@
 #pragma once
 
 #include <atomic>
+#include <string>
 #include "../core/Processor.hpp"
 #include "RtAudioOutput.hpp"
 #include "RtMidiInput.hpp"
@@ -29,6 +30,7 @@ class StandaloneHost {
 public:
     struct Options {
         unsigned int audioDeviceId = RtAudioOutput::kUseDefaultDevice;
+        std::string audioApiName;         // "" = auto (prefer direct ALSA)
         int midiPortIndex = -1;           // -1 = auto-select
         unsigned int sampleRate = 44100;
         unsigned int bufferFrames = 256;
