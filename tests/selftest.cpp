@@ -8,6 +8,8 @@
 #include <vector>
 
 #include "../src/core/MidiBuffer.hpp"
+#include "../src/dsp/SmoothedValue.hpp"
+#include "../src/host/ControlLoop.hpp"
 #include "../src/synth/SineSynthProcessor.hpp"
 
 using namespace rtsynth;
@@ -195,6 +197,61 @@ int main(){
         midi.add(MidiEvent::pitchBend(0, 16383, 1));
         const float p = renderBlocks(synth, 10, midi);
         expect(std::isfinite(p) && p > 0.01f, "pitch bend renders normally");
+    }
+
+    // hardware-style control input driving a parameter through ControlLoop
+    {
+        struct FakePot : ControlInput {
+            float value = 0.0f;
+            const char* name() const override { return "fake"; }
+            int numChannels() const override { return 1; }
+            bool read(int, float& out) override { out = value; return true; }
+        } pot;
+
+        SineSynthProcessor s2;
+        Parameter* attack = s2.parameters().byId("attack");
+        ControlLoop loop(pot);
+        loop.addMapping(0, attack);
+
+        pot.value = 1.0f;
+        for(int i = 0; i < 50; i++){
+            loop.pollOnce();
+        }
+        expect(std::abs(attack->getNormalized() - 1.0f) < 0.01f,
+               "control loop drives parameter to knob position");
+
+        const float held = attack->get();
+        pot.value = 0.9995f;  // sub-threshold ADC jitter
+        for(int i = 0; i < 50; i++){
+            loop.pollOnce();
+        }
+        expect(attack->get() == held, "ADC jitter below threshold is ignored");
+
+        pot.value = 0.0f;
+        for(int i = 0; i < 50; i++){
+            loop.pollOnce();
+        }
+        expect(attack->getNormalized() < 0.01f,
+               "control loop follows knob back down");
+    }
+
+    // per-sample gain smoothing converges without overshoot
+    {
+        SmoothedValue smoothed;
+        smoothed.prepare(kSampleRate, 0.005f);
+        smoothed.snap(0.0f);
+        smoothed.setTarget(1.0f);
+        bool monotone = true;
+        float previous = 0.0f;
+        for(int i = 0; i < 4410; i++){  // 100 ms
+            const float value = smoothed.tick();
+            if(value < previous || value > 1.0f){
+                monotone = false;
+            }
+            previous = value;
+        }
+        expect(monotone && previous > 0.99f,
+               "smoothed value ramps monotonically to its target");
     }
 
     std::printf("%s (%d failure%s)\n",

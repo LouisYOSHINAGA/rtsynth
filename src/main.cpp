@@ -14,6 +14,8 @@
 #include <utility>
 #include <vector>
 
+#include "host/ControlLoop.hpp"
+#include "host/Mcp3008Input.hpp"
 #include "host/StandaloneHost.hpp"
 #include "synth/SineSynthProcessor.hpp"
 
@@ -38,6 +40,9 @@ void printUsage(const char* argv0){
         "  -g, --gain <0..1>    master gain (default: 0.2)\n"
         "  -p, --param <id=v>   set a synth parameter, repeatable\n"
         "                       (e.g. --param attack=0.001 --param release=0.1)\n"
+        "  --adc <ch>=<id>      map an MCP3008 ADC channel to a parameter, repeatable\n"
+        "                       (e.g. --adc 0=gain --adc 1=attack); needs SPI enabled\n"
+        "  --adc-device <path>  SPI device of the ADC (default: /dev/spidev0.0)\n"
         "  -h, --help           show this help\n";
 }
 
@@ -70,6 +75,8 @@ int main(int argc, char* argv[]){
     float gain = -1.0f;
     bool listRequested = false;
     std::vector<std::pair<std::string, float>> paramOverrides;
+    std::vector<std::pair<int, std::string>> adcMappings;
+    std::string adcDevice = "/dev/spidev0.0";
 
     try{
     for(int i = 1; i < argc; i++){
@@ -105,6 +112,19 @@ int main(int argc, char* argv[]){
                 paramOverrides.emplace_back(assignment.substr(0, eq),
                                             std::stof(assignment.substr(eq + 1)));
             }
+        }else if(arg == "--adc"){
+            if(const char* v = nextArg()){
+                const std::string assignment = v;
+                const size_t eq = assignment.find('=');
+                if(eq == std::string::npos){
+                    std::cerr << "--adc expects <channel>=<param id>, got: " << assignment << std::endl;
+                    return 1;
+                }
+                adcMappings.emplace_back(std::stoi(assignment.substr(0, eq)),
+                                         assignment.substr(eq + 1));
+            }
+        }else if(arg == "--adc-device"){
+            if(const char* v = nextArg()) adcDevice = v;
         }else{
             std::cerr << "Unknown option: " << arg << std::endl;
             printUsage(argv[0]);
@@ -126,7 +146,8 @@ int main(int argc, char* argv[]){
     if(gain >= 0.0f){
         synth.parameters().byId("gain")->set(gain);
     }
-    for(const auto& [id, value] : paramOverrides){
+
+    auto findParameter = [&synth](const std::string& id) -> rtsynth::Parameter* {
         rtsynth::Parameter* parameter = synth.parameters().byId(id);
         if(parameter == nullptr){
             std::cerr << "Unknown parameter '" << id << "'. Available:" << std::endl;
@@ -135,6 +156,13 @@ int main(int argc, char* argv[]){
                           << "] (default " << p->defaultValue() << ")"
                           << (p->unit().empty()? "" : " ") << p->unit() << std::endl;
             }
+        }
+        return parameter;
+    };
+
+    for(const auto& [id, value] : paramOverrides){
+        rtsynth::Parameter* parameter = findParameter(id);
+        if(parameter == nullptr){
             return 1;
         }
         parameter->set(value);
@@ -143,6 +171,25 @@ int main(int argc, char* argv[]){
     rtsynth::StandaloneHost host(synth);
     if(!host.start(options)){
         return 1;
+    }
+
+    // optional hardware knobs: MCP3008 channels polled into parameters
+    rtsynth::Mcp3008Input adc;
+    rtsynth::ControlLoop controlLoop(adc);
+    if(!adcMappings.empty()){
+        if(!adc.open(adcDevice)){
+            return 1;
+        }
+        for(const auto& [channel, id] : adcMappings){
+            rtsynth::Parameter* parameter = findParameter(id);
+            if(parameter == nullptr){
+                return 1;
+            }
+            controlLoop.addMapping(channel, parameter);
+        }
+        controlLoop.start();
+        std::cout << "ADC control: " << adc.name() << " on " << adcDevice
+                  << ", " << adcMappings.size() << " mapping(s)" << std::endl;
     }
 
     std::signal(SIGINT, handleSignal);
@@ -168,6 +215,7 @@ int main(int argc, char* argv[]){
     }
 
     std::cout << "\nShutting down." << std::endl;
+    controlLoop.stop();
     host.stop();
     return 0;
 }

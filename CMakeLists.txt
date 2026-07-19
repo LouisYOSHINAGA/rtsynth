@@ -24,6 +24,7 @@ pkg_check_modules(RTMIDI REQUIRED IMPORTED_TARGET rtmidi)
 
 add_executable(rtsynth
     src/main.cpp
+    src/host/Mcp3008Input.cpp
     src/host/RtAudioOutput.cpp
     src/host/RtMidiInput.cpp
     src/host/StandaloneHost.cpp
@@ -32,6 +33,7 @@ target_link_libraries(rtsynth PRIVATE rtsynth_core PkgConfig::RTAUDIO PkgConfig:
 
 # --- offline self-test: needs no audio hardware ------------------------------
 enable_testing()
+find_package(Threads REQUIRED)
 add_executable(rtsynth_selftest tests/selftest.cpp)
-target_link_libraries(rtsynth_selftest PRIVATE rtsynth_core)
+target_link_libraries(rtsynth_selftest PRIVATE rtsynth_core Threads::Threads)
 add_test(NAME selftest COMMAND rtsynth_selftest)

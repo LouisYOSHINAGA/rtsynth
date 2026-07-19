@@ -2,6 +2,7 @@
 
 #include <vector>
 #include "../core/Processor.hpp"
+#include "../dsp/SmoothedValue.hpp"
 #include "VoiceAllocator.hpp"
 
 namespace rtsynth {
@@ -41,6 +42,7 @@ private:
 
     VoiceAllocator<kNumVoices> voices_;
     std::vector<float> monoScratch_;   // sized in prepare(); reused every block
+    SmoothedValue gainSmoother_;       // per-sample gain ramp (anti-zipper)
     double sampleRate_ = 44100.0;
     double pitchBendRatio_ = 1.0;
 

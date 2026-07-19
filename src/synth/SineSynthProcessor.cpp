@@ -24,6 +24,8 @@ void SineSynthProcessor::prepare(double sampleRate, int maxBlockSize){
     sampleRate_ = sampleRate;
     monoScratch_.assign(static_cast<size_t>(maxBlockSize), 0.0f);
     voices_.prepare(sampleRate);
+    gainSmoother_.prepare(sampleRate, 0.005f);
+    gainSmoother_.snap(gain_->get());
     pitchBendRatio_ = 1.0;
 }
 
@@ -57,11 +59,12 @@ void SineSynthProcessor::process(AudioBufferView& output, const MidiBuffer& midi
     }
     renderSegment(pos, numFrames - pos);
 
-    // output stage: gain + hard clip, copied to every output channel
-    const float gain = gain_->get();
+    // output stage: smoothed gain (no zipper noise when a knob/CC moves)
+    // + hard clip, copied to every output channel
+    gainSmoother_.setTarget(gain_->get());
     for(int i = 0; i < numFrames; i++){
-        monoScratch_[static_cast<size_t>(i)] =
-            std::clamp(gain * monoScratch_[static_cast<size_t>(i)], -1.0f, 1.0f);
+        monoScratch_[static_cast<size_t>(i)] = std::clamp(
+            gainSmoother_.tick() * monoScratch_[static_cast<size_t>(i)], -1.0f, 1.0f);
     }
     for(int ch = 0; ch < output.numChannels(); ch++){
         float* dst = output.channel(ch);
