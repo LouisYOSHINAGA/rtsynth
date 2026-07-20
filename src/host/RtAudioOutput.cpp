@@ -23,6 +23,7 @@ RtAudio::Api RtAudioOutput::resolveApi(const std::string& apiName){
     RtAudio::getCompiledApi(apis);
     if(std::find(apis.begin(), apis.end(), RtAudio::LINUX_ALSA) != apis.end()){
         RtAudio probe(RtAudio::LINUX_ALSA);
+        probe.showWarnings(false);  // enumeration only; skipped devices are fine
         if(probe.getDeviceCount() > 0){
             return RtAudio::LINUX_ALSA;
         }
@@ -34,6 +35,7 @@ RtAudio::Api RtAudioOutput::resolveApi(const std::string& apiName){
 RtAudio& RtAudioOutput::rt(){
     if(audio_ == nullptr){
         audio_ = std::make_unique<RtAudio>(resolveApi(requestedApi_));
+        audio_->showWarnings(verboseWarnings_);
     }
     return *audio_;
 }

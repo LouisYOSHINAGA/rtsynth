@@ -36,6 +36,9 @@ public:
         unsigned int bufferFrames = 256;
         unsigned int channels = 2;
         bool requireMidi = true;
+        // debug: show backend warnings and mirror received MIDI into the
+        // monitor queues (printed by the main thread, see RtMidiInput)
+        bool verbose = false;
     };
 
     explicit StandaloneHost(Processor& processor) : processor_(processor){}

@@ -4,6 +4,9 @@
 namespace rtsynth {
 
 bool StandaloneHost::start(const Options& options){
+    audio_.setVerboseWarnings(options.verbose);
+    midi_.setMonitorEnabled(options.verbose);
+
     if(!midi_.open(options.midiPortIndex)){
         if(options.requireMidi){
             return false;

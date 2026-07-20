@@ -46,11 +46,32 @@ public:
     uint64_t receivedCount() const { return received_.load(std::memory_order_relaxed); }
     uint64_t droppedCount() const { return dropped_.load(std::memory_order_relaxed); }
 
+    // --- debug monitor (--verbose) ------------------------------------------
+    // When enabled, every decoded event is also copied into a per-port
+    // monitor queue that the MAIN thread drains and prints — RT threads
+    // never do I/O. Consumer of the monitor queues is the main thread only.
+    void setMonitorEnabled(bool enabled){
+        monitor_.store(enabled, std::memory_order_relaxed);
+    }
+
+    // Drain pending monitor copies on the caller's (main) thread;
+    // fn(portName, event) is invoked once per event.
+    template <typename Fn>
+    void drainMonitor(Fn&& fn){
+        for(auto& port : ports_){
+            MidiEvent event;
+            while(port->monitorQueue.pop(event)){
+                fn(port->name, event);
+            }
+        }
+    }
+
 private:
     struct Port {
         RtMidiInput* owner = nullptr;
         std::unique_ptr<RtMidiIn> midi;
         SpscRingBuffer<MidiEvent, 1024> queue;
+        SpscRingBuffer<MidiEvent, 256> monitorQueue;  // consumer: main thread
         std::string name;
     };
 
@@ -67,6 +88,7 @@ private:
     std::vector<std::unique_ptr<Port>> ports_;
     std::atomic<uint64_t> received_{0};
     std::atomic<uint64_t> dropped_{0};
+    std::atomic<bool> monitor_{false};
 };
 
 }  // namespace rtsynth

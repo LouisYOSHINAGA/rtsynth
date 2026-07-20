@@ -57,6 +57,12 @@ public:
     void setApi(const std::string& apiName){ requestedApi_ = apiName; }
     std::string currentApiName();
 
+    // RtAudio prints probe warnings to stderr while enumerating devices
+    // (e.g. "snd_pcm_open error ... 524" for an HDMI port with no audio
+    // sink). They are harmless — the device is just skipped — so they are
+    // hidden unless verbose. Effective only before the first device call.
+    void setVerboseWarnings(bool verbose){ verboseWarnings_ = verbose; }
+
     std::vector<AudioDeviceDesc> listOutputDevices();
     unsigned int defaultOutputDevice();
 
@@ -84,6 +90,7 @@ private:
 
     std::unique_ptr<RtAudio> audio_;
     std::string requestedApi_;
+    bool verboseWarnings_ = false;
     RenderCallback callback_;
     std::vector<float*> channelPointers_;
     unsigned int bufferFrames_ = 0;

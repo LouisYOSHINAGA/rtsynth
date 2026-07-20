@@ -119,6 +119,10 @@ void RtMidiInput::rtCallback(double /*timestamp*/, std::vector<uint8_t>* message
         // never spin/block in the callback: drop and count instead
         port->owner->dropped_.fetch_add(1, std::memory_order_relaxed);
     }
+
+    if(port->owner->monitor_.load(std::memory_order_relaxed)){
+        port->monitorQueue.push(event);  // best effort; overflow just skips prints
+    }
 }
 
 }  // namespace rtsynth

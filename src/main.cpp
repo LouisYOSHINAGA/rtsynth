@@ -49,6 +49,8 @@ void printUsage(const char* argv0){
         "  --adc <ch>=<id>      map an MCP3008 ADC channel to a parameter, repeatable\n"
         "                       (e.g. --adc 0=gain --adc 1=attack); needs SPI enabled\n"
         "  --adc-device <path>  SPI device of the ADC (default: /dev/spidev0.0)\n"
+        "  -v, --verbose        print received MIDI events (note/cc/bend) and\n"
+        "                       show audio backend warnings\n"
         "  -h, --help           show this help\n";
 }
 
@@ -134,6 +136,8 @@ int main(int argc, char* argv[]){
             }
         }else if(arg == "--adc-device"){
             if(const char* v = nextArg()) adcDevice = v;
+        }else if(arg == "-v" || arg == "--verbose"){
+            options.verbose = true;
         }else{
             std::cerr << "Unknown option: " << arg << std::endl;
             printUsage(argv[0]);
@@ -228,10 +232,37 @@ int main(int argc, char* argv[]){
     std::signal(SIGTERM, handleSignal);
     std::cout << "Running. Press Ctrl+C to quit." << std::endl;
 
+    auto printMidiEvent = [](const std::string& portName, const rtsynth::MidiEvent& e){
+        std::cout << "[midi] ";
+        switch(e.type){
+            case rtsynth::MidiEvent::Type::NoteOn:
+                std::cout << "note on  ch " << +e.channel << "  note " << +e.data1
+                          << "  vel " << +e.data2;
+                break;
+            case rtsynth::MidiEvent::Type::NoteOff:
+                std::cout << "note off ch " << +e.channel << "  note " << +e.data1;
+                break;
+            case rtsynth::MidiEvent::Type::ControlChange:
+                std::cout << "cc       ch " << +e.channel << "  cc " << +e.data1
+                          << "  val " << +e.data2;
+                break;
+            case rtsynth::MidiEvent::Type::PitchBend:
+                std::cout << "bend     ch " << +e.channel << "  value " << e.pitchBend14;
+                break;
+        }
+        std::cout << "  (" << portName << ")" << std::endl;
+    };
+
     uint64_t lastXruns = 0;
     uint64_t lastDrops = 0;
+    // poll faster in verbose mode so MIDI prints feel immediate
+    const auto pollPeriod = std::chrono::milliseconds(options.verbose? 50 : 500);
     while(g_running.load()){
-        std::this_thread::sleep_for(std::chrono::milliseconds(500));
+        std::this_thread::sleep_for(pollPeriod);
+
+        if(options.verbose){
+            host.midi().drainMonitor(printMidiEvent);
+        }
 
         // report problems from the main thread, never from RT threads
         const uint64_t xruns = host.audio().xrunCount();
