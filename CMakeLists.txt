@@ -43,6 +43,7 @@ pkg_check_modules(RTMIDI REQUIRED IMPORTED_TARGET rtmidi)
 
 add_executable(rtsynth
     src/main.cpp
+    src/host/GpioEncoderInput.cpp
     src/host/Mcp3008Input.cpp
     src/host/RtAudioOutput.cpp
     src/host/RtMidiInput.cpp

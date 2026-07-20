@@ -1,6 +1,7 @@
 #pragma once
 
 #include <atomic>
+#include <cstdint>
 #include <string>
 #include <vector>
 #include <memory>
@@ -42,7 +43,14 @@ public:
     float get() const { return value_.load(std::memory_order_relaxed); }
     void set(float plain){
         value_.store(std::clamp(plain, min_, max_), std::memory_order_relaxed);
+        changes_.fetch_add(1, std::memory_order_relaxed);
     }
+
+    // Monotonic count of set() calls. A UI (LCD, log, ...) polls this to
+    // find out *which* parameter changed without hooking every writer:
+    // writers stay lock-free whichever thread they run on, and the UI
+    // compares counts at its own pace (see host/ParameterWatcher.hpp).
+    uint32_t changeCount() const { return changes_.load(std::memory_order_relaxed); }
 
     // normalized [0, 1] access (what a VST host / MIDI CC sees)
     float getNormalized() const {
@@ -56,6 +64,7 @@ private:
     std::string id_, name_, unit_;
     float min_, max_, defaultValue_;
     std::atomic<float> value_;
+    std::atomic<uint32_t> changes_{0};
 };
 
 // Parameter registry owned by a Processor. All parameters are created up

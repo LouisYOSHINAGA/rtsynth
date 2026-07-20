@@ -12,25 +12,43 @@
 
 namespace rtsynth {
 
-// Polls a ControlInput on its own (non-realtime) thread and writes the
+// Polls physical controls on its own (non-realtime) thread and writes the
 // values into Parameters — the hardware-UI equivalent of the MIDI CC path.
 // Because Parameters are atomic, the audio thread picks the changes up on
-// its next block without any locking.
+// its next block without any locking. Both control kinds are supported and
+// can be mixed freely (e.g. ADC pots on some parameters, encoders on
+// others, MIDI CC on the rest — last writer wins, like any synth panel):
 //
-// Two stages keep a noisy pot from spamming or "zipping" a parameter:
-//   1. an exponential moving average filters ADC noise per poll
-//   2. a write threshold (~2 LSB of a 10-bit ADC) suppresses idle jitter,
-//      so the Parameter is only touched when the knob actually moved
+//   absolute (ControlInput, e.g. MCP3008 pots): two stages keep a noisy
+//   pot from spamming or "zipping" a parameter — an exponential moving
+//   average filters ADC noise, and a write threshold (~2 LSB of a 10-bit
+//   ADC) suppresses idle jitter, so the Parameter is only touched when
+//   the knob really moved.
+//
+//   relative (RelativeControlInput, e.g. GPIO rotary encoders): each
+//   detent step nudges the parameter by `stepSize` of its normalized
+//   range; no filtering is needed because encoders are already discrete.
+//
 // (Per-sample smoothing against zipper noise is the Processor's job —
 // see dsp/SmoothedValue.hpp; this class only tames the control rate.)
 class ControlLoop {
 public:
-    explicit ControlLoop(ControlInput& input) : input_(input){}
+    // Either input may be null when that control kind is not used.
+    explicit ControlLoop(ControlInput* absoluteInput = nullptr,
+                         RelativeControlInput* relativeInput = nullptr)
+        : absolute_(absoluteInput), relative_(relativeInput){}
     ~ControlLoop(){ stop(); }
 
-    // Map an input channel onto a parameter. Call before start().
+    // Map an absolute-input channel onto a parameter. Call before start().
     void addMapping(int channel, Parameter* parameter){
-        slots_.push_back({channel, parameter, 0.0f, -1.0f, false});
+        absoluteSlots_.push_back({channel, parameter, 0.0f, -1.0f, false});
+    }
+
+    // Map a relative-input channel onto a parameter; one detent step moves
+    // the normalized value by stepSize. Call before start().
+    void addRelativeMapping(int channel, Parameter* parameter,
+                            float stepSize = kDefaultStepSize){
+        relativeSlots_.push_back({channel, parameter, stepSize});
     }
 
     void start(int pollRateHz = 100){
@@ -58,9 +76,36 @@ public:
 
     // One synchronous poll of every mapping (also used by the self-test).
     void pollOnce(){
-        for(Slot& slot : slots_){
+        pollAbsolute();
+        pollRelative();
+    }
+
+private:
+    static constexpr float kSmoothing = 0.5f;        // EMA coefficient per poll
+    static constexpr float kWriteThreshold = 0.002f; // ~2 LSB at 10 bit
+    static constexpr float kDefaultStepSize = 0.01f; // 100 detents = full range
+
+    struct AbsoluteSlot {
+        int channel;
+        Parameter* parameter;
+        float filtered;
+        float lastWritten;
+        bool primed;
+    };
+
+    struct RelativeSlot {
+        int channel;
+        Parameter* parameter;
+        float stepSize;
+    };
+
+    void pollAbsolute(){
+        if(absolute_ == nullptr){
+            return;
+        }
+        for(AbsoluteSlot& slot : absoluteSlots_){
             float raw = 0.0f;
-            if(!input_.read(slot.channel, raw)){
+            if(!absolute_->read(slot.channel, raw)){
                 continue;
             }
             if(!slot.primed){
@@ -77,20 +122,24 @@ public:
         }
     }
 
-private:
-    static constexpr float kSmoothing = 0.5f;        // EMA coefficient per poll
-    static constexpr float kWriteThreshold = 0.002f; // ~2 LSB at 10 bit
+    void pollRelative(){
+        if(relative_ == nullptr){
+            return;
+        }
+        for(RelativeSlot& slot : relativeSlots_){
+            const int delta = relative_->readDelta(slot.channel);
+            if(delta != 0){
+                slot.parameter->setNormalized(
+                    slot.parameter->getNormalized()
+                    + static_cast<float>(delta) * slot.stepSize);
+            }
+        }
+    }
 
-    struct Slot {
-        int channel;
-        Parameter* parameter;
-        float filtered;
-        float lastWritten;
-        bool primed;
-    };
-
-    ControlInput& input_;
-    std::vector<Slot> slots_;
+    ControlInput* absolute_;
+    RelativeControlInput* relative_;
+    std::vector<AbsoluteSlot> absoluteSlots_;
+    std::vector<RelativeSlot> relativeSlots_;
     std::thread thread_;
     std::atomic<bool> running_{false};
 };

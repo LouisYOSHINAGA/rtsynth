@@ -10,6 +10,8 @@
 #include "../src/core/MidiBuffer.hpp"
 #include "../src/dsp/SmoothedValue.hpp"
 #include "../src/host/ControlLoop.hpp"
+#include "../src/host/GpioEncoderInput.hpp"  // QuadratureDecoder
+#include "../src/host/ParameterWatcher.hpp"
 #include "../src/synth/SineSynthProcessor.hpp"
 #ifdef RTSYNTH_HAVE_PD
 #include "../src/synth/PdSynthProcessor.hpp"
@@ -213,7 +215,7 @@ int main(){
 
         SineSynthProcessor s2;
         Parameter* attack = s2.parameters().byId("attack");
-        ControlLoop loop(pot);
+        ControlLoop loop(&pot);
         loop.addMapping(0, attack);
 
         pot.value = 1.0f;
@@ -311,6 +313,78 @@ int main(){
                "pd: line 1's value is untouched by the retargeted CC14");
     }
 #endif
+
+    // rotary encoder path: relative mapping nudges the parameter and clamps
+    {
+        struct FakeEncoder : RelativeControlInput {
+            int pending = 0;
+            const char* name() const override { return "fake-enc"; }
+            int numChannels() const override { return 1; }
+            int readDelta(int) override {
+                const int d = pending;
+                pending = 0;
+                return d;
+            }
+        } encoder;
+
+        SineSynthProcessor s3;
+        Parameter* sustain = s3.parameters().byId("sustain");
+        sustain->setNormalized(0.5f);
+        ControlLoop loop(nullptr, &encoder);
+        loop.addRelativeMapping(0, sustain, 0.01f);
+
+        encoder.pending = +5;
+        loop.pollOnce();
+        expect(std::abs(sustain->getNormalized() - 0.55f) < 0.001f,
+               "encoder detents nudge the parameter");
+
+        encoder.pending = -100;
+        loop.pollOnce();
+        expect(sustain->getNormalized() == 0.0f,
+               "encoder movement clamps at the parameter range");
+    }
+
+    // quadrature decoding: one full EC11 cycle in each direction
+    {
+        QuadratureDecoder decoder;
+        decoder.reset(0b00);
+        int detents = 0;
+        for(uint8_t state : {0b01, 0b11, 0b10, 0b00}){  // clockwise cycle
+            detents += decoder.onState(state);
+        }
+        expect(detents == +1, "quadrature full cycle gives one CW detent");
+
+        detents = 0;
+        for(uint8_t state : {0b10, 0b11, 0b01, 0b00}){  // counter-clockwise
+            detents += decoder.onState(state);
+        }
+        expect(detents == -1, "quadrature reverse cycle gives one CCW detent");
+
+        detents = 0;
+        for(uint8_t state : {0b01, 0b00, 0b01, 0b00}){  // contact bounce
+            detents += decoder.onState(state);
+        }
+        expect(detents == 0, "contact bounce produces no detent");
+    }
+
+    // parameter change watching (the LCD/console hook)
+    {
+        SineSynthProcessor s4;
+        ParameterWatcher watcher(s4.parameters());
+
+        int reported = 0;
+        Parameter* changed = nullptr;
+        watcher.pollChanges([&](Parameter& p){ reported++; changed = &p; });
+        expect(reported == 0, "watcher is silent when nothing changed");
+
+        s4.parameters().byId("decay")->set(0.3f);
+        watcher.pollChanges([&](Parameter& p){ reported++; changed = &p; });
+        expect(reported == 1 && changed != nullptr && changed->id() == "decay",
+               "watcher reports exactly the changed parameter");
+
+        watcher.pollChanges([&](Parameter&){ reported++; });
+        expect(reported == 1, "watcher reports each change only once");
+    }
 
     // per-sample gain smoothing converges without overshoot
     {
