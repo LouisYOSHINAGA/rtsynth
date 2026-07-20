@@ -31,7 +31,7 @@ public:
     struct Options {
         unsigned int audioDeviceId = RtAudioOutput::kUseDefaultDevice;
         std::string audioApiName;         // "" = auto (prefer direct ALSA)
-        int midiPortIndex = -1;           // -1 = auto-select
+        int midiPortIndex = -1;           // -1 = connect to all ports
         unsigned int sampleRate = 44100;
         unsigned int bufferFrames = 256;
         unsigned int channels = 2;

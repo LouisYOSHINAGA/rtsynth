@@ -10,7 +10,9 @@ bool StandaloneHost::start(const Options& options){
         }
         std::cerr << "Continuing without MIDI input." << std::endl;
     }else{
-        std::cout << "MIDI input: " << midi_.openedPortName() << std::endl;
+        std::cout << "MIDI input (" << midi_.numOpenPorts() << " port"
+                  << ((midi_.numOpenPorts() == 1)? "" : "s") << "): "
+                  << midi_.openedPortNames() << std::endl;
     }
 
     audio_.setApi(options.audioApiName);
