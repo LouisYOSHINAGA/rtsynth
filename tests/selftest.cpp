@@ -11,6 +11,9 @@
 #include "../src/dsp/SmoothedValue.hpp"
 #include "../src/host/ControlLoop.hpp"
 #include "../src/synth/SineSynthProcessor.hpp"
+#ifdef RTSYNTH_HAVE_PD
+#include "../src/synth/PdSynthProcessor.hpp"
+#endif
 
 using namespace rtsynth;
 
@@ -53,7 +56,7 @@ bool allFinite(const std::vector<float>& buffer){
     return true;
 }
 
-float renderBlocks(SineSynthProcessor& synth, int numBlocks, const MidiBuffer& firstBlockMidi){
+float renderBlocks(Processor& synth, int numBlocks, const MidiBuffer& firstBlockMidi){
     StereoBlock block;
     MidiBuffer empty;
     float maxPeak = 0.0f;
@@ -234,6 +237,48 @@ int main(){
         expect(attack->getNormalized() < 0.01f,
                "control loop follows knob back down");
     }
+
+#ifdef RTSYNTH_HAVE_PD
+    // the PD synth (external/pd submodule) hosted as a Processor
+    {
+        PdSynthProcessor pd;
+        pd.prepare(kSampleRate, kBlockSize);
+
+        MidiBuffer empty;
+        expect(renderBlocks(pd, 4, empty) == 0.0f, "pd: silent before any note");
+
+        StereoBlock block;
+        MidiBuffer midi;
+        midi.add(MidiEvent::noteOn(0, 60, 100));
+        AudioBufferView view = block.view();
+        pd.process(view, midi);
+        for(int i = 0; i < 10; i++){
+            AudioBufferView v = block.view();
+            pd.process(v, empty);
+        }
+        expect(peak(block.left) > 0.01f && peak(block.right) > 0.01f,
+               "pd: note-on produces signal on both channels");
+        expect(allFinite(block.left) && peak(block.left) <= 1.0f,
+               "pd: output is finite and clipped");
+
+        MidiBuffer off;
+        off.add(MidiEvent::noteOff(0, 60));
+        renderBlocks(pd, 300, off);  // ride out the DCA release
+        expect(renderBlocks(pd, 4, empty) == 0.0f, "pd: silent again after release");
+
+        MidiBuffer flood;
+        for(uint8_t n = 0; n < 32; n++){
+            flood.add(MidiEvent::noteOn(0, static_cast<uint8_t>(40 + n), 100));
+        }
+        const float p = renderBlocks(pd, 20, flood);
+        expect(std::isfinite(p) && p <= 1.0f, "pd: voice stealing is stable and clipped");
+
+        MidiBuffer allOff;
+        allOff.add(MidiEvent::controlChange(0, 123, 0));
+        renderBlocks(pd, 400, allOff);
+        expect(renderBlocks(pd, 4, empty) == 0.0f, "pd: CC123 releases all notes");
+    }
+#endif
 
     // per-sample gain smoothing converges without overshoot
     {

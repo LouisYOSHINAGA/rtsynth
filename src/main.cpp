@@ -9,6 +9,7 @@
 #include <csignal>
 #include <cstring>
 #include <iostream>
+#include <memory>
 #include <string>
 #include <thread>
 #include <utility>
@@ -18,6 +19,9 @@
 #include "host/Mcp3008Input.hpp"
 #include "host/StandaloneHost.hpp"
 #include "synth/SineSynthProcessor.hpp"
+#ifdef RTSYNTH_HAVE_PD
+#include "synth/PdSynthProcessor.hpp"
+#endif
 
 namespace {
 
@@ -30,6 +34,7 @@ void handleSignal(int){
 void printUsage(const char* argv0){
     std::cout <<
         "Usage: " << argv0 << " [options]\n"
+        "  -s, --synth <name>   instrument to run: sine, pd (default: sine)\n"
         "  -l, --list           list audio devices and MIDI ports, then exit\n"
         "  -a, --api <name>     audio API: alsa, pulse, jack, ...\n"
         "                       (default: direct ALSA when available — lowest latency)\n"
@@ -74,6 +79,7 @@ int main(int argc, char* argv[]){
     rtsynth::StandaloneHost::Options options;
     float gain = -1.0f;
     bool listRequested = false;
+    std::string synthName = "sine";
     std::vector<std::pair<std::string, float>> paramOverrides;
     std::vector<std::pair<int, std::string>> adcMappings;
     std::string adcDevice = "/dev/spidev0.0";
@@ -89,6 +95,8 @@ int main(int argc, char* argv[]){
             return 0;
         }else if(arg == "-l" || arg == "--list"){
             listRequested = true;  // handled after parsing so --api applies
+        }else if(arg == "-s" || arg == "--synth"){
+            if(const char* v = nextArg()) synthName = v;
         }else if(arg == "-a" || arg == "--api"){
             if(const char* v = nextArg()) options.audioApiName = v;
         }else if(arg == "-d" || arg == "--device"){
@@ -142,16 +150,39 @@ int main(int argc, char* argv[]){
         return 0;
     }
 
-    rtsynth::SineSynthProcessor synth;
+    std::unique_ptr<rtsynth::Processor> synth;
+    if(synthName == "sine"){
+        synth = std::make_unique<rtsynth::SineSynthProcessor>();
+    }else if(synthName == "pd"){
+#ifdef RTSYNTH_HAVE_PD
+        synth = std::make_unique<rtsynth::PdSynthProcessor>();
+#else
+        std::cerr << "This build has no PD synth (external/pd submodule was missing).\n"
+                     "Run: git submodule update --init && rebuild." << std::endl;
+        return 1;
+#endif
+    }else{
+        std::cerr << "Unknown synth: " << synthName << " (available: sine, pd)" << std::endl;
+        return 1;
+    }
+    std::cout << "Instrument: " << synth->name() << std::endl;
+
+    // -g targets the master output whatever the instrument calls it
     if(gain >= 0.0f){
-        synth.parameters().byId("gain")->set(gain);
+        rtsynth::Parameter* master = synth->parameters().byId("gain");
+        if(master == nullptr){
+            master = synth->parameters().byId("volume");
+        }
+        if(master != nullptr){
+            master->set(gain);
+        }
     }
 
     auto findParameter = [&synth](const std::string& id) -> rtsynth::Parameter* {
-        rtsynth::Parameter* parameter = synth.parameters().byId(id);
+        rtsynth::Parameter* parameter = synth->parameters().byId(id);
         if(parameter == nullptr){
             std::cerr << "Unknown parameter '" << id << "'. Available:" << std::endl;
-            for(auto& p : synth.parameters()){
+            for(auto& p : synth->parameters()){
                 std::cerr << "  " << p->id() << " [" << p->min() << ".." << p->max()
                           << "] (default " << p->defaultValue() << ")"
                           << (p->unit().empty()? "" : " ") << p->unit() << std::endl;
@@ -168,7 +199,7 @@ int main(int argc, char* argv[]){
         parameter->set(value);
     }
 
-    rtsynth::StandaloneHost host(synth);
+    rtsynth::StandaloneHost host(*synth);
     if(!host.start(options)){
         return 1;
     }
