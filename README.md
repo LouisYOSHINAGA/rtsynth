@@ -200,6 +200,24 @@ VST3 SDK への依存は `vsttypes.h` の型エイリアス（`ParamValue` = dou
 | `line{1,2}_{dco,dcw,dca}_level{1..7}` | 8 段 EG のレベル |
 | `line{1,2}_{dco,dcw,dca}_{sustain,end}` | サステイン点・エンド点 |
 
+**MIDI CC マッピング** — pd の VST3 版では、CC→パラメータの変換は DSP 側
+（processor.cpp）ではなく **ホスト側**（controller.cpp の `getMidiControllerAssignment`）が
+行います。スタンドアロンにはそのホストが無いため、`PdSynthProcessor::handleEvent()` で
+同じマッピングを再現しています:
+
+| CC | 内容 |
+|---|---|
+| CC7 | Volume |
+| CC3 | CC Edit Line 切替（値 <64 → Line1 を編集対象、≥64 → Line2） |
+| CC14–30 | 編集対象ラインの DCO EG（レート1–8・レベル1–7・サステイン・エンド） |
+| CC46–62 | 同 DCW EG |
+| CC102–118 | 同 DCA EG |
+| CC120 / CC123 | All Sound Off / All Notes Off |
+
+ハード側の CZ 実機同様、EG のツマミ 1 系統を Line1/Line2 で共有し、CC3（パネルの
+LINE SELECT に相当）で編集対象を切り替える設計です。`cc_edit_line` パラメータで
+現在の編集対象を確認・`--param` での直接指定もできます。
+
 **注意点**:
 
 - プラグインの素の状態は無音（エディタが値を入れる前提）のため、スタンドアロンでは

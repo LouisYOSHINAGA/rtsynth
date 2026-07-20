@@ -17,6 +17,32 @@ constexpr uint8_t kCcAllNotesOff = 123;
 // sustain point option 1 of 8 -> the EG sustains at step 1
 constexpr double kSustainAtStep1 = 1.0 / (kNumEgSustainPointOptions - 1);
 
+// Mirrors pd's controller.cpp getMidiControllerAssignment(): in the VST3
+// plugin, the *host* consults this table to route raw MIDI CC into
+// normalized parameter changes before the processor ever sees them, so
+// processor.cpp itself contains no CC handling. Standalone there is no
+// host doing that translation, so PdSynthProcessor::handleEvent must
+// reimplement the same mapping directly. Kept in sync with pd's
+// controller.cpp; if that table changes there, mirror the change here.
+constexpr uint8_t kCcEditLineController = 3;   // 0-63 = line 1, 64-127 = line 2
+constexpr uint8_t kEgCcBlockFirst[3] = {
+    14,   // DCO EG: CC 14-30
+    46,   // DCW EG: CC 46-62
+    102,  // DCA EG: CC 102-118
+};
+
+// Offset within a line parameter block addressed by `cc`, or -1 if `cc`
+// is not one of the EG controller ranges above.
+int lineParamOffsetForCc(uint8_t cc){
+    for(int egIndex = 0; egIndex < 3; egIndex++){
+        const uint8_t first = kEgCcBlockFirst[egIndex];
+        if(first <= cc && cc < first + kLineParamEgBlockSize){
+            return kLineParamEgBegin + egIndex * kLineParamEgBlockSize + (cc - first);
+        }
+    }
+    return -1;
+}
+
 }  // namespace
 
 PdSynthProcessor::PdSynthProcessor(){
@@ -114,9 +140,10 @@ void PdSynthProcessor::registerParameters(){
         }
     }
 
-    // VST-only routing switch; registered to keep ids aligned with pd
+    // Selects which line the EG MIDI CC blocks (CC14-30/46-62/102-118)
+    // address; see kCcEditLineController in handleEvent(). 0 = line 1.
     paramHandles_[kParamCcEditLine] = parameters_.add(
-        "cc_edit_line", "CC Edit Line (unused standalone)", 0.0f, 1.0f, 0.0f);
+        "cc_edit_line", "CC Edit Line (0=Line1, 1=Line2)", 0.0f, 1.0f, 0.0f);
 }
 
 void PdSynthProcessor::prepare(double sampleRate, int maxBlockSize){
@@ -291,8 +318,21 @@ void PdSynthProcessor::handleEvent(const MidiEvent& event){
                     releaseAllVoices();
                     heldNotes_.clear();
                     break;
-                default:
+                case kCcEditLineController:
+                    // chooses which line the EG CC blocks below address
+                    setAndApply(kParamCcEditLine, (event.data2 >= 64)? 1.0 : 0.0);
                     break;
+                default: {
+                    const int offset = lineParamOffsetForCc(event.data1);
+                    if(offset >= 0){
+                        const bool editLine2 = paramHandles_[kParamCcEditLine]->get() >= 0.5f;
+                        const int paramId = (editLine2? kParamLine2Begin : kParamLine1Begin) + offset;
+                        // CC values arrive unquantized, same as the plugin's
+                        // host-driven automation (see controller.cpp)
+                        setAndApply(paramId, static_cast<double>(event.data2) / 127.0);
+                    }
+                    break;
+                }
             }
             break;
     }

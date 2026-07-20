@@ -278,6 +278,38 @@ int main(){
         renderBlocks(pd, 400, allOff);
         expect(renderBlocks(pd, 4, empty) == 0.0f, "pd: CC123 releases all notes");
     }
+
+    // MIDI CC reaches pd's own EG/line parameters (controller.cpp's
+    // getMidiControllerAssignment mapping, reimplemented in handleEvent)
+    {
+        PdSynthProcessor pd;
+        pd.prepare(kSampleRate, kBlockSize);
+        MidiBuffer empty;
+
+        // CC14 = DCO EG rate 1 of the edit-target line (line 1 by default)
+        Parameter* line1DcoRate1 = pd.parameters().byId("line1_dco_rate1");
+        Parameter* line2DcoRate1 = pd.parameters().byId("line2_dco_rate1");
+        expect(line1DcoRate1 != nullptr && line2DcoRate1 != nullptr,
+               "pd: EG CC target parameters are registered");
+
+        MidiBuffer cc14;
+        cc14.add(MidiEvent::controlChange(0, 14, 64));
+        renderBlocks(pd, 1, cc14);
+        expect(std::abs(line1DcoRate1->getNormalized() - 64.0f / 127.0f) < 0.01f,
+               "pd: CC14 sets line1 DCO EG rate 1");
+
+        // CC3 >= 64 switches the CC edit target to line 2
+        MidiBuffer cc3;
+        cc3.add(MidiEvent::controlChange(0, 3, 127));
+        renderBlocks(pd, 1, cc3);
+        MidiBuffer cc14b;
+        cc14b.add(MidiEvent::controlChange(0, 14, 32));
+        renderBlocks(pd, 1, cc14b);
+        expect(std::abs(line2DcoRate1->getNormalized() - 32.0f / 127.0f) < 0.01f,
+               "pd: CC3 retargets CC14 to line 2");
+        expect(std::abs(line1DcoRate1->getNormalized() - 64.0f / 127.0f) < 0.01f,
+               "pd: line 1's value is untouched by the retargeted CC14");
+    }
 #endif
 
     // per-sample gain smoothing converges without overshoot
