@@ -66,6 +66,13 @@ public:
     // cause.
     virtual int activeVoiceCount() const { return -1; }
 
+    // Optional: cap polyphony at runtime. Fewer voices means proportionally
+    // less DSP work, which is how an embedded build trades polyphony for
+    // headroom when the audio deadline is tight (see RtAudioOutput's load
+    // meter). Call before playing; instruments that don't support it ignore
+    // the request. Values <= 0 mean "instrument default".
+    virtual void setMaxVoices(int /*maxVoices*/){}
+
 protected:
     // Populate in the subclass constructor via parameters_.add(...).
     ParameterSet parameters_;

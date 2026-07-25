@@ -229,7 +229,7 @@ void PdSynthProcessor::updateDetune(){
 int PdSynthProcessor::effectiveMaxVoices() const {
     const bool dualLine = lineSelect_ == LineSelect::kLine1Plus1Detuned
                        || lineSelect_ == LineSelect::kLine1Plus2Detuned;
-    return dualLine? kMaxVoices / 2 : kMaxVoices;
+    return dualLine? voiceLimit_ / 2 : voiceLimit_;
 }
 
 PdSynthProcessor::PdVoice* PdSynthProcessor::allocateVoice(){
@@ -353,7 +353,8 @@ void PdSynthProcessor::handleEvent(const MidiEvent& event){
 void PdSynthProcessor::renderSegment(int startFrame, int numFrames){
     for(int i = 0; i < numFrames; i++){
         double mixed = 0.0;
-        for(PdVoice& voice : voices_){
+        for(int v = 0; v < voiceLimit_; v++){
+            PdVoice& voice = voices_[static_cast<size_t>(v)];
             if(voice.isActive()){
                 mixed += voice.generate(pitchBend_);
             }

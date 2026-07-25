@@ -65,8 +65,12 @@ void printUsage(const char* argv0){
         "  --lcd <addr>         show the last-changed parameter on a 16x2 I2C LCD\n"
         "                       at this address (e.g. --lcd 0x27; find with i2cdetect)\n"
         "  --lcd-bus <path>     I2C bus of the LCD (default: /dev/i2c-1)\n"
-        "  -v, --verbose        print received MIDI events and parameter changes,\n"
-        "                       and show audio backend warnings\n"
+        "  --voices <n>         cap polyphony (fewer voices = less CPU; the pd\n"
+        "                       synth is expensive, try 8 or 6 if audio crackles)\n"
+        "  -v, --verbose        print received MIDI events, parameter changes and\n"
+        "                       DSP load, and show audio backend warnings\n"
+        "  --midi-dump          also print the raw MIDI bytes as received\n"
+        "                       (--midi-raw only; settles what the device really sent)\n"
         "  -h, --help           show this help\n";
 }
 
@@ -150,6 +154,8 @@ struct CliOptions {
     float encoderStep = 0.01f;
     int lcdAddress = -1;               // -1 = no LCD
     std::string lcdBus = "/dev/i2c-1";
+    int maxVoices = 0;                 // 0 = instrument default
+    bool midiDump = false;
 };
 
 // Returns false (after printing a message) when the arguments are invalid;
@@ -235,6 +241,10 @@ bool parseArguments(int argc, char* argv[], CliOptions& cli, bool& exitRequested
                 }
             }else if(arg == "--lcd-bus"){
                 if(const char* v = nextArg()) cli.lcdBus = v;
+            }else if(arg == "--voices"){
+                if(const char* v = nextArg()) cli.maxVoices = std::stoi(v);
+            }else if(arg == "--midi-dump"){
+                cli.midiDump = true;
             }else if(arg == "-v" || arg == "--verbose"){
                 cli.host.verbose = true;
             }else{
@@ -289,6 +299,10 @@ int main(int argc, char* argv[]){
         return 1;
     }
     std::cout << "Instrument: " << synth->name() << std::endl;
+    if(cli.maxVoices > 0){
+        synth->setMaxVoices(cli.maxVoices);
+        std::cout << "Polyphony capped at " << cli.maxVoices << " voices" << std::endl;
+    }
 
     // -g targets the master output whatever the instrument calls it
     if(cli.gain >= 0.0f){
@@ -325,6 +339,9 @@ int main(int argc, char* argv[]){
     rtsynth::StandaloneHost host(*synth);
     if(!host.start(cli.host)){
         return 1;
+    }
+    if(cli.midiDump){
+        host.midi().setRawDumpEnabled(true);
     }
 
     // optional hardware controls: ADC pots (absolute) and/or GPIO rotary
@@ -395,6 +412,8 @@ int main(int argc, char* argv[]){
     uint64_t lastDeferrals = 0;
     uint64_t lastUndecoded = 0;
     int lastVoices = -1;
+    int loadTicks = 0;
+    uint64_t lastReadErrors = 0;
     bool schedulingReported = false;
     // poll faster in verbose mode so MIDI/parameter prints feel immediate
     const auto pollPeriod = std::chrono::milliseconds(cli.host.verbose? 50 : 500);
@@ -419,9 +438,41 @@ int main(int argc, char* argv[]){
             }
         }
 
+        if(cli.midiDump){
+            // one line per read burst: status bytes start a new group so the
+            // running-status structure of the stream stays visible
+            bool any = false;
+            host.midi().drainRawDump([&any](uint8_t byte){
+                if(byte & 0x80){
+                    if(any){
+                        std::cout << std::endl;
+                    }
+                    std::cout << "[bytes]";
+                    any = true;
+                }
+                std::printf(" %02X", byte);
+            });
+            if(any){
+                std::cout << std::endl;
+            }
+        }
+
         if(cli.host.verbose){
             host.midi().drainMonitor(printMidiEvent);
             watcher.pollChanges(printParameterChange);
+
+            // DSP load: > ~0.8 means the render barely fits the deadline and
+            // crackling is a CPU problem (lower --voices / raise --buffer).
+            // Summarized once a second so it doesn't drown the MIDI trace.
+            if(++loadTicks >= 20){
+                loadTicks = 0;
+                const float peak = host.audio().peakLoad();
+                std::printf("[load] %.0f%% peak / %.0f%% now, %d voices%s\n",
+                            peak * 100.0f, host.audio().currentLoad() * 100.0f,
+                            synth->activeVoiceCount(),
+                            (peak > 0.8f)? "  <-- too high, lower --voices" : "");
+                host.audio().resetPeakLoad();
+            }
 
             // stuck-voice gauge: a count pinned at the maximum while no key
             // is held means voices never end (lost note-offs / stalled EGs)
@@ -454,6 +505,13 @@ int main(int argc, char* argv[]){
             std::cerr << "[warning] undecodable MIDI messages (total: " << undecoded
                       << ")" << std::endl;
             lastUndecoded = undecoded;
+        }
+        const uint64_t readErrors = host.midi().readErrorCount();
+        if(readErrors != lastReadErrors){
+            std::cerr << "[warning] MIDI device read errors — the kernel buffer"
+                         " overran and bytes were lost (total: " << readErrors << ")"
+                      << std::endl;
+            lastReadErrors = readErrors;
         }
     }
 

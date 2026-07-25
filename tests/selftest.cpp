@@ -423,6 +423,28 @@ int main(){
                "value formatting omits the missing unit");
     }
 
+    // runtime polyphony cap (--voices): never exceed it, still fully usable
+    {
+        SineSynthProcessor capped;
+        capped.setMaxVoices(4);
+        capped.prepare(kSampleRate, kBlockSize);
+
+        MidiBuffer midi;
+        for(uint8_t n = 0; n < 12; n++){
+            midi.add(MidiEvent::noteOn(0, static_cast<uint8_t>(50 + n), 100));
+        }
+        const float p = renderBlocks(capped, 10, midi);
+        expect(std::isfinite(p) && p > 0.01f, "capped synth still sounds");
+        expect(capped.activeVoiceCount() <= 4, "polyphony cap is respected");
+
+        MidiBuffer allOff;
+        allOff.add(MidiEvent::controlChange(0, 123, 0));
+        renderBlocks(capped, 300, allOff);
+        MidiBuffer empty;
+        expect(renderBlocks(capped, 4, empty) == 0.0f,
+               "capped synth releases all notes");
+    }
+
     // raw MIDI byte-stream parsing (the --midi-raw input path)
     {
         MidiStreamParser parser;

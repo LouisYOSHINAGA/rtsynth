@@ -86,6 +86,16 @@ public:
     int audioThreadPolicy() const { return threadPolicy_.load(std::memory_order_relaxed); }
     bool audioThreadIsRealtime() const;
 
+    // DSP load: time spent inside the render callback divided by the time
+    // the block represents (0.5 = half the deadline used). Above ~0.8 the
+    // stream is on the edge and any scheduling hiccup becomes an audible
+    // dropout, so this is the number that decides whether crackling is a
+    // CPU problem or a scheduling problem. peakLoad() is the worst block
+    // since the last resetPeakLoad().
+    float currentLoad() const { return load_.load(std::memory_order_relaxed); }
+    float peakLoad() const { return peakLoad_.load(std::memory_order_relaxed); }
+    void resetPeakLoad(){ peakLoad_.store(0.0f, std::memory_order_relaxed); }
+
 private:
     static int rtCallback(void* outputBuffer, void* inputBuffer, unsigned int nFrames,
                           double streamTime, RtAudioStreamStatus status, void* userData);
@@ -105,6 +115,9 @@ private:
     unsigned int channels_ = 2;
     std::atomic<uint64_t> xruns_{0};
     std::atomic<int> threadPolicy_{-1};
+    std::atomic<float> load_{0.0f};
+    std::atomic<float> peakLoad_{0.0f};
+    double sampleRate_ = 44100.0;  // for converting frames to seconds
 };
 
 }  // namespace rtsynth

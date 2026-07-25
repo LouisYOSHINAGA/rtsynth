@@ -1,5 +1,6 @@
 #pragma once
 
+#include <algorithm>
 #include <array>
 #include <string>
 #include <vector>
@@ -58,6 +59,15 @@ public:
         return count;
     }
 
+    // pd voices are expensive (per-sample transcendentals in pd's Voice and
+    // PD generators), so capping polyphony is the main lever for fitting
+    // the render inside the audio deadline on a Raspberry Pi
+    void setMaxVoices(int maxVoices) override {
+        voiceLimit_ = (maxVoices <= 0)
+                    ? kMaxVoices
+                    : std::min(maxVoices, static_cast<int>(kMaxVoices));
+    }
+
 private:
     using PdVoice = Steinberg::Vst::Voice;
     using LineSelect = Steinberg::Vst::LineSelect;
@@ -107,6 +117,7 @@ private:
     int detuneNote_ = 0;
     int detuneFine_ = 0;
     uint64_t nextVoiceAge_ = 0;
+    int voiceLimit_ = kMaxVoices;   // runtime polyphony cap (--voices)
 };
 
 }  // namespace rtsynth
