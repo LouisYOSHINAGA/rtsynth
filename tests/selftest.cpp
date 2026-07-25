@@ -9,6 +9,7 @@
 
 #include "../src/core/MidiBuffer.hpp"
 #include "../src/core/MidiStreamParser.hpp"
+#include "../src/core/StuckNoteGuard.hpp"
 #include "../src/dsp/SmoothedValue.hpp"
 #include "../src/host/ControlLoop.hpp"
 #include "../src/host/DisplayUi.hpp"
@@ -443,6 +444,65 @@ int main(){
         MidiBuffer empty;
         expect(renderBlocks(capped, 4, empty) == 0.0f,
                "capped synth releases all notes");
+    }
+
+    // stuck-note recovery: a chord whose note-off got lost on the wire
+    {
+        StuckNoteGuard guard;
+        guard.prepare(kSampleRate, 1.0f);  // 1 s timeout for the test
+
+        std::vector<MidiEvent> emitted;
+        auto collect = [&](const MidiEvent& e){ emitted.push_back(e); return true; };
+
+        // the exact failure seen on the wire: three note-ons, only two offs
+        guard.observe(MidiEvent::noteOn(0, 67, 100));
+        guard.observe(MidiEvent::noteOn(0, 71, 100));
+        guard.observe(MidiEvent::noteOn(0, 74, 100));
+        guard.observe(MidiEvent::noteOff(0, 67));
+        guard.observe(MidiEvent::noteOff(0, 74));
+        expect(guard.heldCount() == 1, "guard tracks the note left hanging");
+
+        guard.advance(static_cast<int>(kSampleRate / 2));   // 0.5 s
+        guard.collectExpired(collect);
+        expect(emitted.empty(), "guard waits out the timeout before acting");
+
+        guard.advance(static_cast<int>(kSampleRate));        // now past 1 s
+        guard.collectExpired(collect);
+        expect(emitted.size() == 1
+               && emitted[0].type == MidiEvent::Type::NoteOff
+               && emitted[0].data1 == 71,
+               "guard releases exactly the hanging note");
+        expect(guard.recoveredCount() == 1 && guard.heldCount() == 0,
+               "guard reports the recovery and forgets the note");
+
+        emitted.clear();
+        guard.advance(static_cast<int>(kSampleRate * 10));
+        guard.collectExpired(collect);
+        expect(emitted.empty(), "guard does not release the same note twice");
+
+        // a retriggered note restarts its clock instead of expiring early
+        guard.observe(MidiEvent::noteOn(0, 60, 100));
+        guard.advance(static_cast<int>(kSampleRate * 0.9));
+        guard.observe(MidiEvent::noteOn(0, 60, 100));   // retrigger
+        guard.advance(static_cast<int>(kSampleRate * 0.5));
+        guard.collectExpired(collect);
+        expect(emitted.empty(), "retrigger restarts the timeout");
+
+        // CC123 clears the record, so nothing is released afterwards
+        guard.observe(MidiEvent::controlChange(0, 123, 0));
+        guard.advance(static_cast<int>(kSampleRate * 10));
+        guard.collectExpired(collect);
+        expect(emitted.empty() && guard.heldCount() == 0,
+               "all-notes-off clears the guard's record");
+
+        // disabled guard never injects anything
+        StuckNoteGuard off;
+        off.prepare(kSampleRate, 0.0f);
+        off.observe(MidiEvent::noteOn(0, 60, 100));
+        off.advance(static_cast<int>(kSampleRate * 600));
+        std::vector<MidiEvent> none;
+        off.collectExpired([&](const MidiEvent& e){ none.push_back(e); return true; });
+        expect(none.empty() && !off.enabled(), "timeout 0 disables the guard");
     }
 
     // raw MIDI byte-stream parsing (the --midi-raw input path)

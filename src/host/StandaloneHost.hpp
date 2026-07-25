@@ -5,6 +5,7 @@
 #include <vector>
 
 #include "../core/Processor.hpp"
+#include "../core/StuckNoteGuard.hpp"
 #include "MidiInput.hpp"
 #include "RawMidiInput.hpp"
 #include "RtAudioOutput.hpp"
@@ -43,6 +44,9 @@ public:
         unsigned int bufferFrames = 256;
         unsigned int channels = 2;
         bool requireMidi = true;
+        // release a note automatically if its note-off never arrives (some
+        // controllers drop them); 0 disables. See core/StuckNoteGuard.hpp.
+        float noteTimeoutSeconds = 30.0f;
         // debug: show backend warnings and mirror received MIDI into the
         // monitor queues (printed by the main thread, see MidiInput)
         bool verbose = false;
@@ -62,6 +66,10 @@ public:
     // audio callback is stalling or a controller is flooding CCs)
     uint64_t midiDeferralCount() const { return midiOverflow_.load(std::memory_order_relaxed); }
 
+    // notes force-released because their note-off never arrived; a nonzero
+    // value means the MIDI source is losing note-offs (see the byte dump)
+    uint64_t recoveredNoteCount() const { return recoveredNotes_.load(std::memory_order_relaxed); }
+
 private:
     Processor& processor_;
     RtAudioOutput audio_;
@@ -69,7 +77,9 @@ private:
     RawMidiInput rawMidi_;
     MidiInput* activeMidi_ = &seqMidi_;
     MidiBuffer midiBuffer_;
+    StuckNoteGuard noteGuard_;          // audio thread only
     std::atomic<uint64_t> midiOverflow_{0};
+    std::atomic<uint64_t> recoveredNotes_{0};
 };
 
 }  // namespace rtsynth

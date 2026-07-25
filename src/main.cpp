@@ -71,6 +71,9 @@ void printUsage(const char* argv0){
         "                       DSP load, and show audio backend warnings\n"
         "  --midi-dump          also print the raw MIDI bytes as received\n"
         "                       (--midi-raw only; settles what the device really sent)\n"
+        "  --note-timeout <s>   release a note automatically after this many seconds\n"
+        "                       if its note-off never arrives (default 30, 0 = off);\n"
+        "                       a safety net for controllers that drop note-offs\n"
         "  -h, --help           show this help\n";
 }
 
@@ -245,6 +248,8 @@ bool parseArguments(int argc, char* argv[], CliOptions& cli, bool& exitRequested
                 if(const char* v = nextArg()) cli.maxVoices = std::stoi(v);
             }else if(arg == "--midi-dump"){
                 cli.midiDump = true;
+            }else if(arg == "--note-timeout"){
+                if(const char* v = nextArg()) cli.host.noteTimeoutSeconds = std::stof(v);
             }else if(arg == "-v" || arg == "--verbose"){
                 cli.host.verbose = true;
             }else{
@@ -414,6 +419,7 @@ int main(int argc, char* argv[]){
     int lastVoices = -1;
     int loadTicks = 0;
     uint64_t lastReadErrors = 0;
+    uint64_t lastRecovered = 0;
     bool schedulingReported = false;
     // poll faster in verbose mode so MIDI/parameter prints feel immediate
     const auto pollPeriod = std::chrono::milliseconds(cli.host.verbose? 50 : 500);
@@ -505,6 +511,13 @@ int main(int argc, char* argv[]){
             std::cerr << "[warning] undecodable MIDI messages (total: " << undecoded
                       << ")" << std::endl;
             lastUndecoded = undecoded;
+        }
+        const uint64_t recovered = host.recoveredNoteCount();
+        if(recovered != lastRecovered){
+            std::cerr << "[warning] force-released a note whose note-off never arrived"
+                         " (total: " << recovered << "). The MIDI source is losing"
+                         " note-offs — check it with --midi-dump." << std::endl;
+            lastRecovered = recovered;
         }
         const uint64_t readErrors = host.midi().readErrorCount();
         if(readErrors != lastReadErrors){
