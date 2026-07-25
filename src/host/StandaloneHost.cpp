@@ -5,20 +5,28 @@ namespace rtsynth {
 
 bool StandaloneHost::start(const Options& options){
     audio_.setVerboseWarnings(options.verbose);
-    midi_.setMonitorEnabled(options.verbose);
 
-    if(!midi_.open(options.midiPortIndex)){
+    // pick the MIDI backend: raw kernel devices when requested, otherwise
+    // the ALSA sequencer via RtMidi
+    bool midiOpen;
+    if(!options.rawMidiDevices.empty()){
+        activeMidi_ = &rawMidi_;
+        midiOpen = rawMidi_.open(options.rawMidiDevices);
+    }else{
+        activeMidi_ = &seqMidi_;
+        midiOpen = seqMidi_.open(options.midiPortIndex);
+    }
+    activeMidi_->setMonitorEnabled(options.verbose);
+
+    if(!midiOpen){
         if(options.requireMidi){
             return false;
         }
         std::cerr << "Continuing without MIDI input." << std::endl;
     }else{
-        std::cout << "MIDI input (" << midi_.numOpenPorts() << " port"
-                  << ((midi_.numOpenPorts() == 1)? "" : "s") << "): "
-                  << midi_.openedPortNames() << std::endl;
+        std::cout << "MIDI input: " << activeMidi_->description() << std::endl;
     }
 
-    audio_.setApi(options.audioApiName);
     const bool opened = audio_.open(
         options.audioDeviceId, options.sampleRate, options.bufferFrames,
         options.channels,
@@ -30,7 +38,7 @@ bool StandaloneHost::start(const Options& options){
             // block (~ a few ms later). Never pop-then-discard — a burst
             // after an audio stall could otherwise eat note-offs, leaving
             // notes hanging forever.
-            while(!midiBuffer_.full() && midi_.pop(event)){
+            while(!midiBuffer_.full() && activeMidi_->pop(event)){
                 midiBuffer_.add(event);  // offset 0: applied at block start
             }
             if(midiBuffer_.full()){
@@ -40,7 +48,7 @@ bool StandaloneHost::start(const Options& options){
         });
 
     if(!opened){
-        midi_.close();
+        activeMidi_->close();
         return false;
     }
 
@@ -49,7 +57,7 @@ bool StandaloneHost::start(const Options& options){
                        static_cast<int>(audio_.actualBufferFrames()));
 
     if(!audio_.start()){
-        midi_.close();
+        activeMidi_->close();
         return false;
     }
 
@@ -62,7 +70,8 @@ bool StandaloneHost::start(const Options& options){
 
 void StandaloneHost::stop(){
     audio_.close();
-    midi_.close();
+    seqMidi_.close();
+    rawMidi_.close();
 }
 
 }  // namespace rtsynth

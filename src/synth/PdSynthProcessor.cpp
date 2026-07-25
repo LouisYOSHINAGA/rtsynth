@@ -256,6 +256,18 @@ void PdSynthProcessor::onNoteOn(int channel, int note){
         voices_[0].noteOn(channel, note, nextVoiceAge_++);  // last-note priority
         return;
     }
+
+    // Retrigger a voice already holding this key instead of stacking a
+    // second one (the plugin stacks; a hardware synth should self-heal:
+    // if a note-off ever gets lost upstream, the next press+release of
+    // the same key fully silences it, and the pool doesn't fill with
+    // zombie voices).
+    for(PdVoice& voice : voices_){
+        if(voice.isHeld(channel, note)){
+            voice.noteOn(channel, note, nextVoiceAge_++);
+            return;
+        }
+    }
     allocateVoice()->noteOn(channel, note, nextVoiceAge_++);
 }
 

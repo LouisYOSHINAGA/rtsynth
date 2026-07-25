@@ -22,6 +22,7 @@
 #include "host/I2cLcd1602.hpp"
 #include "host/Mcp3008Input.hpp"
 #include "host/ParameterWatcher.hpp"
+#include "host/RawMidiInput.hpp"
 #include "host/StandaloneHost.hpp"
 #include "synth/SineSynthProcessor.hpp"
 #ifdef RTSYNTH_HAVE_PD
@@ -44,8 +45,11 @@ void printUsage(const char* argv0){
         "  -a, --api <name>     audio API: alsa, pulse, jack, ...\n"
         "                       (default: direct ALSA when available — lowest latency)\n"
         "  -d, --device <id>    audio output device id (default: system default)\n"
-        "  -m, --midi <index>   restrict MIDI input to one port index\n"
+        "  -m, --midi <index>   restrict MIDI input to one sequencer port index\n"
         "                       (default: connect to all ports, e.g. keyboard + CC box)\n"
+        "  --midi-raw <dev>     read MIDI straight from a kernel rawmidi device,\n"
+        "                       bypassing the ALSA sequencer; repeatable\n"
+        "                       (e.g. --midi-raw hw:1,0,0 — ids shown by --list)\n"
         "  -r, --rate <hz>      sample rate (default: 44100)\n"
         "  -b, --buffer <n>     buffer size in frames (default: 256)\n"
         "  -g, --gain <0..1>    master gain (default: 0.2)\n"
@@ -78,13 +82,22 @@ void listDevices(const std::string& apiName){
     }
 
     rtsynth::RtMidiInput midi;
-    std::cout << "=== MIDI Input Ports ===" << std::endl;
+    std::cout << "=== MIDI Input Ports (sequencer) ===" << std::endl;
     const auto ports = midi.listPorts();
     if(ports.empty()){
         std::cout << "  (none)" << std::endl;
     }
     for(size_t i = 0; i < ports.size(); i++){
         std::cout << "  [" << i << "] " << ports[i] << std::endl;
+    }
+
+    std::cout << "=== Raw MIDI Devices (--midi-raw) ===" << std::endl;
+    const auto rawInputs = rtsynth::RawMidiInput::listInputs();
+    if(rawInputs.empty()){
+        std::cout << "  (none)" << std::endl;
+    }
+    for(const auto& [id, name] : rawInputs){
+        std::cout << "  " << id << "  " << name << std::endl;
     }
 }
 
@@ -175,6 +188,8 @@ bool parseArguments(int argc, char* argv[], CliOptions& cli, bool& exitRequested
                 if(const char* v = nextArg()) cli.host.audioDeviceId = std::stoul(v);
             }else if(arg == "-m" || arg == "--midi"){
                 if(const char* v = nextArg()) cli.host.midiPortIndex = std::stoi(v);
+            }else if(arg == "--midi-raw"){
+                if(const char* v = nextArg()) cli.host.rawMidiDevices.push_back(v);
             }else if(arg == "-r" || arg == "--rate"){
                 if(const char* v = nextArg()) cli.host.sampleRate = std::stoul(v);
             }else if(arg == "-b" || arg == "--buffer"){
@@ -378,6 +393,7 @@ int main(int argc, char* argv[]){
     uint64_t lastXruns = 0;
     uint64_t lastDrops = 0;
     uint64_t lastDeferrals = 0;
+    uint64_t lastUndecoded = 0;
     // poll faster in verbose mode so MIDI/parameter prints feel immediate
     const auto pollPeriod = std::chrono::milliseconds(cli.host.verbose? 50 : 500);
     while(g_running.load()){
@@ -404,6 +420,12 @@ int main(int argc, char* argv[]){
             std::cerr << "[warning] MIDI backlog deferred to next block (total: "
                       << deferrals << ")" << std::endl;
             lastDeferrals = deferrals;
+        }
+        const uint64_t undecoded = host.midi().undecodedCount();
+        if(undecoded != lastUndecoded){
+            std::cerr << "[warning] undecodable MIDI messages (total: " << undecoded
+                      << ")" << std::endl;
+            lastUndecoded = undecoded;
         }
     }
 

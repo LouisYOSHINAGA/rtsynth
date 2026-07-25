@@ -2,17 +2,21 @@
 
 #include <atomic>
 #include <string>
+#include <vector>
+
 #include "../core/Processor.hpp"
+#include "MidiInput.hpp"
+#include "RawMidiInput.hpp"
 #include "RtAudioOutput.hpp"
 #include "RtMidiInput.hpp"
 
 namespace rtsynth {
 
-// Glue between the platform layer (RtAudio/RtMidi) and a Processor — the
-// standalone equivalent of a DAW hosting a plugin. Three threads exist at
-// runtime, and this class is where they meet:
+// Glue between the platform layer (RtAudio + a MidiInput backend) and a
+// Processor — the standalone equivalent of a DAW hosting a plugin. Three
+// threads exist at runtime, and this class is where they meet:
 //
-//   MIDI thread (RtMidi callback)
+//   MIDI thread(s) (RtMidi callback or rawmidi reader)
 //       decodes raw bytes -> MidiEvent -> lock-free SpscRingBuffer
 //                                              |
 //   audio RT thread (RtAudio callback)         v
@@ -31,13 +35,16 @@ public:
     struct Options {
         unsigned int audioDeviceId = RtAudioOutput::kUseDefaultDevice;
         std::string audioApiName;         // "" = auto (prefer direct ALSA)
-        int midiPortIndex = -1;           // -1 = connect to all ports
+        int midiPortIndex = -1;           // sequencer backend: -1 = all ports
+        // non-empty selects the raw kernel-rawmidi backend instead of the
+        // ALSA sequencer (see MidiInput.hpp for the trade-off)
+        std::vector<std::string> rawMidiDevices;
         unsigned int sampleRate = 44100;
         unsigned int bufferFrames = 256;
         unsigned int channels = 2;
         bool requireMidi = true;
         // debug: show backend warnings and mirror received MIDI into the
-        // monitor queues (printed by the main thread, see RtMidiInput)
+        // monitor queues (printed by the main thread, see MidiInput)
         bool verbose = false;
     };
 
@@ -48,7 +55,7 @@ public:
     void stop();
 
     RtAudioOutput& audio(){ return audio_; }
-    RtMidiInput& midi(){ return midi_; }
+    MidiInput& midi(){ return *activeMidi_; }
 
     // times a block's MidiBuffer filled up and the remaining events were
     // deferred to the next block (nothing is lost; high values mean the
@@ -58,7 +65,9 @@ public:
 private:
     Processor& processor_;
     RtAudioOutput audio_;
-    RtMidiInput midi_;
+    RtMidiInput seqMidi_;
+    RawMidiInput rawMidi_;
+    MidiInput* activeMidi_ = &seqMidi_;
     MidiBuffer midiBuffer_;
     std::atomic<uint64_t> midiOverflow_{0};
 };

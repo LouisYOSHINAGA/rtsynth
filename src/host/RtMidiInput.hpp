@@ -5,36 +5,35 @@
 #include <string>
 #include <vector>
 #include <RtMidi.h>
-#include "../core/MidiBuffer.hpp"
+
 #include "../core/SpscRingBuffer.hpp"
+#include "MidiInput.hpp"
 
 namespace rtsynth {
 
-// Host-side MIDI input. By default it connects to *every* input port
-// (except the ALSA "Midi Through" loopback), so notes from a keyboard and
-// CC from a separate controller can arrive in parallel; pass an explicit
-// port index to restrict input to a single device.
+// ALSA-sequencer MIDI input (via RtMidi). By default it connects to
+// *every* input port (except the ALSA "Midi Through" loopback), so notes
+// from a keyboard and CC from a separate controller can arrive in
+// parallel; pass an explicit port index to restrict input to one device.
 //
 // Threading: RtMidi runs one callback thread per opened port, and the
 // SPSC ring buffer allows only a single producer — so each port gets its
 // own queue (that port's callback thread is the sole producer, the audio
 // thread the sole consumer). pop() drains all of them. Nothing here
 // blocks or allocates after open().
-class RtMidiInput {
+class RtMidiInput : public MidiInput {
 public:
     std::vector<std::string> listPorts();
 
     // portIndex >= 0 opens exactly that port; portIndex < 0 opens all
     // ports except "Midi Through". Returns false when nothing was opened.
     bool open(int portIndex);
-    void close();
+    void close() override;
 
     size_t numOpenPorts() const { return ports_.size(); }
-    // ", "-joined port names, for startup logging
-    std::string openedPortNames() const;
+    std::string description() const override;
 
-    // consumer side (audio thread): drains the per-port queues in turn
-    bool pop(MidiEvent& out){
+    bool pop(MidiEvent& out) override {
         for(auto& port : ports_){
             if(port->queue.pop(out)){
                 return true;
@@ -43,21 +42,15 @@ public:
         return false;
     }
 
-    uint64_t receivedCount() const { return received_.load(std::memory_order_relaxed); }
-    uint64_t droppedCount() const { return dropped_.load(std::memory_order_relaxed); }
+    uint64_t receivedCount() const override { return received_.load(std::memory_order_relaxed); }
+    uint64_t droppedCount() const override { return dropped_.load(std::memory_order_relaxed); }
+    uint64_t undecodedCount() const override { return undecoded_.load(std::memory_order_relaxed); }
 
-    // --- debug monitor (--verbose) ------------------------------------------
-    // When enabled, every decoded event is also copied into a per-port
-    // monitor queue that the MAIN thread drains and prints — RT threads
-    // never do I/O. Consumer of the monitor queues is the main thread only.
-    void setMonitorEnabled(bool enabled){
+    void setMonitorEnabled(bool enabled) override {
         monitor_.store(enabled, std::memory_order_relaxed);
     }
 
-    // Drain pending monitor copies on the caller's (main) thread;
-    // fn(portName, event) is invoked once per event.
-    template <typename Fn>
-    void drainMonitor(Fn&& fn){
+    void drainMonitor(const MonitorFn& fn) override {
         for(auto& port : ports_){
             MidiEvent event;
             while(port->monitorQueue.pop(event)){
@@ -91,6 +84,7 @@ private:
     std::vector<std::unique_ptr<Port>> ports_;
     std::atomic<uint64_t> received_{0};
     std::atomic<uint64_t> dropped_{0};
+    std::atomic<uint64_t> undecoded_{0};
     std::atomic<bool> monitor_{false};
 };
 
