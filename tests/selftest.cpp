@@ -10,6 +10,7 @@
 #include "../src/core/MidiBuffer.hpp"
 #include "../src/dsp/SmoothedValue.hpp"
 #include "../src/host/ControlLoop.hpp"
+#include "../src/host/DisplayUi.hpp"
 #include "../src/host/GpioEncoderInput.hpp"  // QuadratureDecoder
 #include "../src/host/ParameterWatcher.hpp"
 #include "../src/synth/SineSynthProcessor.hpp"
@@ -384,6 +385,41 @@ int main(){
 
         watcher.pollChanges([&](Parameter&){ reported++; });
         expect(reported == 1, "watcher reports each change only once");
+    }
+
+    // display UI: last-changed parameter reaches the (fake) LCD
+    {
+        struct FakeDisplay : TextDisplay {
+            std::string lines[2];
+            int writes = 0;
+            int columns() const override { return 16; }
+            int rows() const override { return 2; }
+            void writeLine(int row, const std::string& text) override {
+                lines[row] = text;
+                writes++;
+            }
+            void clear() override { lines[0].clear(); lines[1].clear(); }
+        } fakeLcd;
+
+        SineSynthProcessor s5;
+        DisplayUi ui(fakeLcd, s5.parameters());
+
+        ui.pollOnce();
+        expect(fakeLcd.writes == 0, "display idles while nothing changes");
+
+        s5.parameters().byId("release")->set(0.25f);
+        ui.pollOnce();
+        expect(fakeLcd.lines[0] == "release" && fakeLcd.lines[1] == "0.250 s",
+               "display shows the last-changed parameter and value");
+
+        const int writesAfterChange = fakeLcd.writes;
+        ui.pollOnce();
+        expect(fakeLcd.writes == writesAfterChange,
+               "display does not redraw without changes");
+
+        Parameter unitless("x", "X", 0.0f, 1.0f, 0.5f);
+        expect(formatParameterValue(unitless) == "0.500",
+               "value formatting omits the missing unit");
     }
 
     // per-sample gain smoothing converges without overshoot

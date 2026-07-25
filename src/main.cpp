@@ -17,7 +17,9 @@
 #include <vector>
 
 #include "host/ControlLoop.hpp"
+#include "host/DisplayUi.hpp"
 #include "host/GpioEncoderInput.hpp"
+#include "host/I2cLcd1602.hpp"
 #include "host/Mcp3008Input.hpp"
 #include "host/ParameterWatcher.hpp"
 #include "host/StandaloneHost.hpp"
@@ -56,6 +58,9 @@ void printUsage(const char* argv0){
         "                       repeatable (e.g. --enc 17,27=line1_dcw_level1)\n"
         "  --enc-chip <path>    GPIO chip of the encoders (default: /dev/gpiochip0)\n"
         "  --enc-step <size>    normalized change per encoder detent (default: 0.01)\n"
+        "  --lcd <addr>         show the last-changed parameter on a 16x2 I2C LCD\n"
+        "                       at this address (e.g. --lcd 0x27; find with i2cdetect)\n"
+        "  --lcd-bus <path>     I2C bus of the LCD (default: /dev/i2c-1)\n"
         "  -v, --verbose        print received MIDI events and parameter changes,\n"
         "                       and show audio backend warnings\n"
         "  -h, --help           show this help\n";
@@ -130,6 +135,8 @@ struct CliOptions {
     std::vector<EncoderMapping> encoderMappings;
     std::string encoderChip = "/dev/gpiochip0";
     float encoderStep = 0.01f;
+    int lcdAddress = -1;               // -1 = no LCD
+    std::string lcdBus = "/dev/i2c-1";
 };
 
 // Returns false (after printing a message) when the arguments are invalid;
@@ -207,6 +214,12 @@ bool parseArguments(int argc, char* argv[], CliOptions& cli, bool& exitRequested
                 if(const char* v = nextArg()) cli.encoderChip = v;
             }else if(arg == "--enc-step"){
                 if(const char* v = nextArg()) cli.encoderStep = std::stof(v);
+            }else if(arg == "--lcd"){
+                if(const char* v = nextArg()){
+                    cli.lcdAddress = static_cast<int>(std::stoul(v, nullptr, 0));  // "0x27" ok
+                }
+            }else if(arg == "--lcd-bus"){
+                if(const char* v = nextArg()) cli.lcdBus = v;
             }else if(arg == "-v" || arg == "--verbose"){
                 cli.host.verbose = true;
             }else{
@@ -340,6 +353,19 @@ int main(int argc, char* argv[]){
         controlLoop.start();
     }
 
+    // optional 16x2 I2C LCD showing the last-changed parameter
+    rtsynth::I2cLcd1602 lcd;
+    rtsynth::DisplayUi displayUi(lcd, synth->parameters());
+    if(cli.lcdAddress >= 0){
+        if(!lcd.open(cli.lcdBus, static_cast<uint8_t>(cli.lcdAddress))){
+            return 1;
+        }
+        displayUi.showStatus(synth->name(), "ready");
+        displayUi.start();
+        std::cout << "LCD: 16x2 on " << cli.lcdBus << " addr 0x"
+                  << std::hex << cli.lcdAddress << std::dec << std::endl;
+    }
+
     std::signal(SIGINT, handleSignal);
     std::signal(SIGTERM, handleSignal);
     std::cout << "Running. Press Ctrl+C to quit." << std::endl;
@@ -382,6 +408,7 @@ int main(int argc, char* argv[]){
     }
 
     std::cout << "\nShutting down." << std::endl;
+    displayUi.stop();
     controlLoop.stop();
     encoders.close();
     host.stop();

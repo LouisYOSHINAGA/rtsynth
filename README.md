@@ -79,6 +79,9 @@ PipeWire、プラグインラッパ等）への移植ではこの層だけを書
 | `Mcp3008Input.{hpp,cpp}` | MCP3008（SPI 接続 8ch 10bit ADC）の `ControlInput` 実装。spidev 経由。配線図はヘッダのコメント参照 |
 | `GpioEncoderInput.{hpp,cpp}` | GPIO ロータリーエンコーダの `RelativeControlInput` 実装。カーネル標準の GPIO キャラクタデバイス (uapi v2) でエッジイベントを受け、直交デコード（`QuadratureDecoder` は単体テスト可能に分離）。内部プルアップ使用で外付け抵抗不要 |
 | `ParameterWatcher.hpp` | UI スレッド（LCD・コンソール等）向けの変更検知。全パラメータの変更カウンタをポーリングし「前回から変わったパラメータ」だけを報告。`-v` のパラメータ表示が使用例 |
+| `TextDisplay.hpp` | 小型キャラクタディスプレイの抽象（行単位書換のみの4メソッド）。表示ハードの差し替え面 |
+| `I2cLcd1602.{hpp,cpp}` | 定番の 1602 LCD + PCF8574 I2C バックパックの `TextDisplay` 実装。カーネルの I2C キャラクタデバイス直叩きで外部ライブラリ不要 |
+| `DisplayUi.hpp` | 表示スレッド。`ParameterWatcher` を購読し「最後に変更されたパラメータの ID と値」を `TextDisplay` に描画（変更が無ければ再描画しない） |
 
 ### `src/main.cpp` — エントリポイント
 
@@ -136,6 +139,7 @@ RtAudio 5.x (bullseye / bookworm) と 6.x (trixie 以降) のどちらでもビ�
 ./build/rtsynth --adc 0=gain --adc 1=attack --adc 2=release  # 物理ツマミ(ポット)の割当
 ./build/rtsynth --enc 17,27=line1_dcw_level1                 # ロータリーエンコーダの割当
 ./build/rtsynth --synth pd      # PD シンセ (external/pd) で起動
+./build/rtsynth --lcd 0x27      # 16x2 I2C LCD に最終変更パラメータを表示
 ./build/rtsynth -v              # デバッグ: 受信 MIDI・パラメータ変更を表示
 ```
 
@@ -262,6 +266,10 @@ LINE SELECT に相当）で編集対象を切り替える設計です。`cc_edit
 
 ## ハードウェア連携（ツマミ・スライダ・DAC）
 
+> **初めて組む場合は [README_HW.md](README_HW.md) を参照してください。**
+> 買い物リスト・配線図・有効化手順・動作確認・トラブルシューティングまで、
+> 電子工作初心者が一人で進められる順序で書いてあります。以下は要点のみです。
+
 ### I2S DAC（音の出口）
 
 Pi 本体のヘッドフォン端子は PWM 生成で品質が低いため、ハードシンセでは I2S DAC
@@ -307,25 +315,28 @@ C（コモン）を GND へ。内部プルアップを使うので外付け抵�
 ポット（絶対値）と違い「現在値からの相対操作」なので、MIDI CC と取り合いになっても
 値が飛ばない利点があります。
 
-### LCD / 状態表示への布石（実装済みの仕組み）
+### LCD 表示（16x2 I2C・実装済み）
 
-「どのパラメータがいつ変わったか」を任意のスレッドから安全に検知する仕組みを
-用意してあります:
+定番の 1602 キャラクタ LCD（PCF8574 I2C バックパック付き）に、最後に変更された
+パラメータの ID と現在値を表示します。書き手が MIDI CC / ポット / エンコーダの
+どれであっても拾います。
 
-- `Parameter` は書込みごとに増えるカウンタ（`changeCount()`）を持つ
-- `host/ParameterWatcher.hpp` がそれをポーリングし、**前回から変わったパラメータだけ**を
-  コールバックで報告する（書き手が MIDI CC / ポット / エンコーダのどれでも検知できる）
+```sh
+sudo raspi-config            # I2C を有効化
+i2cdetect -y 1               # アドレス確認（通常 0x27 か 0x3F）
+./rtsynth --lcd 0x27         # 表示付きで起動（--lcd-bus で別バスも可）
+```
 
-LCD を付けるときは、表示スレッドを1本立てて `pollChanges()` で「最後に動いた
-パラメータ名＋現在値」を描画するだけです（`ParameterWatcher.hpp` のコメントに雛形あり）。
-現在は `-v` オプションが同じ仕組みでコンソールに `[param] line1_dcw_level1 = 0.52` の
-ように表示します — これが LCD 表示のコンソール版プレースホルダです。
+仕組み: `Parameter` の変更カウンタ → `ParameterWatcher`（差分検知）→ `DisplayUi`
+（表示スレッド）→ `TextDisplay`（ハード抽象）→ `I2cLcd1602`。描画は専用スレッドで行われ、
+オーディオ/MIDI スレッドには一切触れません。`-v` の `[param]` 表示も同じ watcher を
+使ったコンソール版です。OLED (SSD1306) 等に替える場合は `TextDisplay` を実装して
+差し替えるだけです。
 
-### ボタン・OLED（未実装の定番構成）
+### ボタン（未実装の定番構成）
 
-- 押しボタンは GPIO のエッジイベントで読める（`GpioEncoderInput` の実装が参考になる）
-- 表示は I2C の SSD1306 OLED / キャラクタ LCD (HD44780 + I2C バックパック) が定番。
-  上記 `ParameterWatcher` を UI スレッドから使う
+- 押しボタンは GPIO のエッジイベントで読める（`GpioEncoderInput` の実装が参考になる）。
+  パッチ切替や `cc_edit_line` のトグルに向く
 
 ### 自動起動（systemd）
 
