@@ -1,5 +1,6 @@
 #pragma once
 
+#include <algorithm>
 #include <array>
 #include <cstdint>
 #include "Voice.hpp"
@@ -31,9 +32,18 @@ public:
         sustainPedal_ = false;
     }
 
+    // runtime polyphony cap (<= 0 restores the full pool); only voices
+    // below the cap are ever allocated or rendered
+    void setMaxVoices(int maxVoices){
+        maxVoices_ = (maxVoices <= 0)
+                   ? NumVoices
+                   : std::min(static_cast<size_t>(maxVoices), NumVoices);
+    }
+    size_t maxVoices() const { return maxVoices_; }
+
     void setEnvelopeParameters(float a, float d, float s, float r){
-        for(auto& v : voices_){
-            v.setEnvelopeParameters(a, d, s, r);
+        for(size_t i = 0; i < maxVoices_; i++){
+            voices_[i].setEnvelopeParameters(a, d, s, r);
         }
     }
 
@@ -55,9 +65,9 @@ public:
         Voice* voice = findVoiceForNote(note);
         if(voice == nullptr){
             // the note may still be waiting behind a steal fade
-            for(auto& v : voices_){
-                if(v.hasPendingNote(note)){
-                    v.cancelPending();
+            for(size_t i = 0; i < maxVoices_; i++){
+                if(voices_[i].hasPendingNote(note)){
+                    voices_[i].cancelPending();
                     return;
                 }
             }
@@ -73,9 +83,9 @@ public:
     void setSustainPedal(bool down){
         sustainPedal_ = down;
         if(!down){
-            for(auto& v : voices_){
-                if(v.isSustained()){
-                    v.stopNote();
+            for(size_t i = 0; i < maxVoices_; i++){
+                if(voices_[i].isSustained()){
+                    voices_[i].stopNote();
                 }
             }
         }
@@ -83,10 +93,10 @@ public:
 
     // CC123: release every note as if its key (and the pedal) were lifted.
     void allNotesOff(){
-        for(auto& v : voices_){
-            v.cancelPending();
-            if(v.isHeld() || v.isSustained()){
-                v.stopNote();
+        for(size_t i = 0; i < maxVoices_; i++){
+            voices_[i].cancelPending();
+            if(voices_[i].isHeld() || voices_[i].isSustained()){
+                voices_[i].stopNote();
             }
         }
     }
@@ -99,16 +109,16 @@ public:
     }
 
     void render(float* dst, int numFrames, double pitchBendRatio){
-        for(auto& v : voices_){
-            v.render(dst, numFrames, pitchBendRatio);
+        for(size_t i = 0; i < maxVoices_; i++){
+            voices_[i].render(dst, numFrames, pitchBendRatio);
         }
     }
 
     // diagnostic gauge; may be read from another thread (approximate)
     int activeCount() const {
         int count = 0;
-        for(const auto& v : voices_){
-            if(v.isActive()){
+        for(size_t i = 0; i < maxVoices_; i++){
+            if(voices_[i].isActive()){
                 count++;
             }
         }
@@ -120,7 +130,8 @@ private:
     Voice* findVoiceForNote(uint8_t note){
         Voice* found = nullptr;
         uint64_t newest = 0;
-        for(auto& v : voices_){
+        for(size_t i = 0; i < maxVoices_; i++){
+            Voice& v = voices_[i];
             if(v.isHeld() && !v.isSustained() && v.note() == note && v.order() > newest){
                 newest = v.order();
                 found = &v;
@@ -130,9 +141,9 @@ private:
     }
 
     Voice* findFreeVoice(){
-        for(auto& v : voices_){
-            if(!v.isActive()){
-                return &v;
+        for(size_t i = 0; i < maxVoices_; i++){
+            if(!voices_[i].isActive()){
+                return &voices_[i];
             }
         }
         return nullptr;
@@ -143,7 +154,8 @@ private:
         Voice* oldestHeld = nullptr;
         uint64_t oldestReleasingOrder = UINT64_MAX;
         uint64_t oldestHeldOrder = UINT64_MAX;
-        for(auto& v : voices_){
+        for(size_t i = 0; i < maxVoices_; i++){
+            Voice& v = voices_[i];
             if(v.isReleasing() && v.order() < oldestReleasingOrder){
                 oldestReleasingOrder = v.order();
                 oldestReleasing = &v;
@@ -156,6 +168,7 @@ private:
     }
 
     std::array<Voice, NumVoices> voices_;
+    size_t maxVoices_ = NumVoices;
     uint64_t orderCounter_ = 0;
     bool sustainPedal_ = false;
 };

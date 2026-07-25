@@ -1,3 +1,4 @@
+#include <errno.h>
 #include <poll.h>
 
 #include <cstdio>
@@ -129,12 +130,27 @@ void RawMidiInput::readerThread(Device& device){
             continue;  // timeout (re-checks running_) or transient error
         }
 
-        uint8_t buffer[256];
+        uint8_t buffer[512];
         const ssize_t bytes = snd_rawmidi_read(device.in, buffer, sizeof(buffer));
         if(bytes > 0){
+            if(rawDump_.load(std::memory_order_relaxed)){
+                for(ssize_t i = 0; i < bytes; i++){
+                    device.rawQueue.push(buffer[i]);  // best effort
+                }
+            }
             device.parser.feed(buffer, static_cast<size_t>(bytes), emit);
+        }else if(bytes < 0 && bytes != -EAGAIN && bytes != -EINTR){
+            // -EPIPE means the kernel's rawmidi input buffer overran and
+            // bytes were discarded by the driver: exactly the kind of
+            // silent loss that leaves notes hanging. Count it, then
+            // resynchronize the parser since the stream may be truncated
+            // mid-message.
+            readErrors_.fetch_add(1, std::memory_order_relaxed);
+            device.parser.reset();
+            if(bytes == -EPIPE){
+                snd_rawmidi_drop(device.in);
+            }
         }
-        // -EAGAIN and transient errors: just poll again
     }
 }
 

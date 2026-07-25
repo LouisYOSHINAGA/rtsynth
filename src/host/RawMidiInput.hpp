@@ -53,9 +53,23 @@ public:
     uint64_t receivedCount() const override { return received_.load(std::memory_order_relaxed); }
     uint64_t droppedCount() const override { return dropped_.load(std::memory_order_relaxed); }
     uint64_t undecodedCount() const override { return 0; }  // parser frames everything
+    uint64_t readErrorCount() const override { return readErrors_.load(std::memory_order_relaxed); }
 
     void setMonitorEnabled(bool enabled) override {
         monitor_.store(enabled, std::memory_order_relaxed);
+    }
+
+    void setRawDumpEnabled(bool enabled) override {
+        rawDump_.store(enabled, std::memory_order_relaxed);
+    }
+
+    void drainRawDump(const std::function<void(uint8_t)>& fn) override {
+        for(auto& device : devices_){
+            uint8_t byte;
+            while(device->rawQueue.pop(byte)){
+                fn(byte);
+            }
+        }
     }
 
     void drainMonitor(const MonitorFn& fn) override {
@@ -76,6 +90,7 @@ private:
         MidiStreamParser parser;               // reader thread only
         SpscRingBuffer<MidiEvent, 4096> queue;
         SpscRingBuffer<MidiEvent, 256> monitorQueue;  // consumer: main thread
+        SpscRingBuffer<uint8_t, 8192> rawQueue;       // consumer: main thread
         std::thread thread;
     };
 
@@ -84,7 +99,9 @@ private:
     std::vector<std::unique_ptr<Device>> devices_;
     std::atomic<uint64_t> received_{0};
     std::atomic<uint64_t> dropped_{0};
+    std::atomic<uint64_t> readErrors_{0};
     std::atomic<bool> monitor_{false};
+    std::atomic<bool> rawDump_{false};
     std::atomic<bool> running_{false};
 };
 

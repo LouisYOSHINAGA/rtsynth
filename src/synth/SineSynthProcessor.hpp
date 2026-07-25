@@ -36,6 +36,7 @@ public:
     void reset() override;
     void process(AudioBufferView& output, const MidiBuffer& midi) override;
     int activeVoiceCount() const override { return voices_.activeCount(); }
+    void setMaxVoices(int maxVoices) override { voices_.setMaxVoices(maxVoices); }
 
 private:
     void handleEvent(const MidiEvent& event);

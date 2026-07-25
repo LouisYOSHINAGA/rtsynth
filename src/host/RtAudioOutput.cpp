@@ -2,6 +2,7 @@
 #include <sched.h>
 
 #include <algorithm>
+#include <chrono>
 #include <iostream>
 #include "RtAudioOutput.hpp"
 
@@ -82,6 +83,7 @@ bool RtAudioOutput::open(unsigned int deviceId, unsigned int sampleRate,
     callback_ = std::move(callback);
     channels_ = channels;
     bufferFrames_ = bufferFrames;
+    sampleRate_ = static_cast<double>(sampleRate);
     channelPointers_.resize(channels);
 
     RtAudio::StreamParameters outputParams;
@@ -186,10 +188,25 @@ int RtAudioOutput::rtCallback(void* outputBuffer, void* /*inputBuffer*/, unsigne
 
     AudioBufferView view(self->channelPointers_.data(),
                          static_cast<int>(self->channels_), static_cast<int>(nFrames));
+
+    // measure how much of this block's deadline the render consumes
+    const auto begin = std::chrono::steady_clock::now();
     if(self->callback_){
         self->callback_(view);
     }else{
         view.clear();
+    }
+    const auto elapsed = std::chrono::steady_clock::now() - begin;
+
+    const double blockSeconds = static_cast<double>(nFrames) / self->sampleRate_;
+    if(blockSeconds > 0.0){
+        const double spent =
+            std::chrono::duration<double>(elapsed).count();
+        const float load = static_cast<float>(spent / blockSeconds);
+        self->load_.store(load, std::memory_order_relaxed);
+        if(load > self->peakLoad_.load(std::memory_order_relaxed)){
+            self->peakLoad_.store(load, std::memory_order_relaxed);
+        }
     }
     return 0;
 }

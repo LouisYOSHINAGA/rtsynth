@@ -39,9 +39,21 @@ public:
     // nonzero values are diagnostic gold when notes go missing
     virtual uint64_t undecodedCount() const = 0;
 
+    // Backend-level input errors (e.g. a kernel rawmidi buffer overrun,
+    // which silently eats bytes). Any nonzero value explains lost notes.
+    virtual uint64_t readErrorCount() const { return 0; }
+
     // --- debug monitor (--verbose): mirrored events printed by main -----
     virtual void setMonitorEnabled(bool enabled) = 0;
     virtual void drainMonitor(const MonitorFn& fn) = 0;  // main thread
+
+    // --- byte-level dump (--midi-dump) ---------------------------------
+    // Mirrors the undecoded wire bytes so the exact stream can be compared
+    // against what the instrument does. This is how "did the keyboard send
+    // that note-off at all?" gets answered instead of guessed. Backends
+    // without access to raw bytes leave these as no-ops.
+    virtual void setRawDumpEnabled(bool /*enabled*/){}
+    virtual void drainRawDump(const std::function<void(uint8_t)>& /*fn*/){}  // main thread
 
     // one line for the startup log, e.g. backend + port names
     virtual std::string description() const = 0;
