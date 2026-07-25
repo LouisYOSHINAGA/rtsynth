@@ -35,6 +35,7 @@ public:
     void prepare(double sampleRate, int maxBlockSize) override;
     void reset() override;
     void process(AudioBufferView& output, const MidiBuffer& midi) override;
+    int activeVoiceCount() const override { return voices_.activeCount(); }
 
 private:
     void handleEvent(const MidiEvent& event);

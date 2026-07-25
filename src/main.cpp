@@ -394,14 +394,42 @@ int main(int argc, char* argv[]){
     uint64_t lastDrops = 0;
     uint64_t lastDeferrals = 0;
     uint64_t lastUndecoded = 0;
+    int lastVoices = -1;
+    bool schedulingReported = false;
     // poll faster in verbose mode so MIDI/parameter prints feel immediate
     const auto pollPeriod = std::chrono::milliseconds(cli.host.verbose? 50 : 500);
     while(g_running.load()){
         std::this_thread::sleep_for(pollPeriod);
 
+        // report once whether the audio thread really got realtime
+        // scheduling — silently missing rtprio permission is the most
+        // common cause of crackling on a Raspberry Pi
+        if(!schedulingReported && host.audio().audioThreadPolicy() >= 0){
+            schedulingReported = true;
+            if(host.audio().audioThreadIsRealtime()){
+                std::cout << "Audio thread: realtime scheduling active" << std::endl;
+            }else{
+                std::cerr <<
+                    "[warning] audio thread did NOT get realtime priority — crackling\n"
+                    "          under load is expected. Fix: add your user to the 'audio'\n"
+                    "          group and create /etc/security/limits.d/audio.conf with:\n"
+                    "            @audio - rtprio 95\n"
+                    "            @audio - memlock unlimited\n"
+                    "          then log out and back in." << std::endl;
+            }
+        }
+
         if(cli.host.verbose){
             host.midi().drainMonitor(printMidiEvent);
             watcher.pollChanges(printParameterChange);
+
+            // stuck-voice gauge: a count pinned at the maximum while no key
+            // is held means voices never end (lost note-offs / stalled EGs)
+            const int voices = synth->activeVoiceCount();
+            if(voices != lastVoices){
+                std::cout << "[voices] " << voices << " active" << std::endl;
+                lastVoices = voices;
+            }
         }
 
         // report problems from the main thread, never from RT threads

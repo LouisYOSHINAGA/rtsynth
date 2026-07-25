@@ -73,7 +73,10 @@ bool RawMidiInput::open(const std::vector<std::string>& deviceIds){
 
     running_.store(true);
     for(auto& device : devices_){
-        device->thread = std::thread([this, &device]{ readerThread(*device); });
+        // capture the heap object by pointer — capturing the loop variable
+        // by reference would dangle once the loop advances/exits
+        Device* raw = device.get();
+        device->thread = std::thread([this, raw]{ readerThread(*raw); });
     }
     return true;
 }

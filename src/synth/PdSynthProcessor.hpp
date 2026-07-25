@@ -48,6 +48,16 @@ public:
     void reset() override;
     void process(AudioBufferView& output, const MidiBuffer& midi) override;
 
+    int activeVoiceCount() const override {
+        int count = 0;
+        for(const PdVoice& voice : voices_){
+            if(voice.isActive()){
+                count++;
+            }
+        }
+        return count;
+    }
+
 private:
     using PdVoice = Steinberg::Vst::Voice;
     using LineSelect = Steinberg::Vst::LineSelect;

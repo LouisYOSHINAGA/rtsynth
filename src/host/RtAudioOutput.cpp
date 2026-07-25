@@ -1,3 +1,6 @@
+#include <pthread.h>
+#include <sched.h>
+
 #include <algorithm>
 #include <iostream>
 #include "RtAudioOutput.hpp"
@@ -89,6 +92,7 @@ bool RtAudioOutput::open(unsigned int deviceId, unsigned int sampleRate,
     RtAudio::StreamOptions options;
     // non-interleaved -> the callback receives planar channel data
     options.flags = RTAUDIO_SCHEDULE_REALTIME | RTAUDIO_NONINTERLEAVED;
+    options.priority = 70;  // used by RtAudio when SCHEDULE_REALTIME succeeds
     options.streamName = "rtsynth";
 
 #if RTSYNTH_RTAUDIO_6
@@ -151,9 +155,24 @@ void RtAudioOutput::close(){
     }
 }
 
+bool RtAudioOutput::audioThreadIsRealtime() const {
+    const int policy = audioThreadPolicy();
+    return policy == SCHED_FIFO || policy == SCHED_RR;
+}
+
 int RtAudioOutput::rtCallback(void* outputBuffer, void* /*inputBuffer*/, unsigned int nFrames,
                               double /*streamTime*/, RtAudioStreamStatus status, void* userData){
     auto* self = static_cast<RtAudioOutput*>(userData);
+
+    if(self->threadPolicy_.load(std::memory_order_relaxed) < 0){
+        // one-time, non-blocking: record the scheduling policy this thread
+        // really runs under so the main thread can warn when the requested
+        // realtime scheduling was silently denied
+        int policy = SCHED_OTHER;
+        sched_param param{};
+        pthread_getschedparam(pthread_self(), &policy, &param);
+        self->threadPolicy_.store(policy, std::memory_order_relaxed);
+    }
 
     if(status != 0){
         // no logging here: this is the RT thread; the host polls xrunCount()
