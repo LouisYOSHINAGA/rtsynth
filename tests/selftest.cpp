@@ -8,6 +8,7 @@
 #include <vector>
 
 #include "../src/core/MidiBuffer.hpp"
+#include "../src/core/MidiStreamParser.hpp"
 #include "../src/dsp/SmoothedValue.hpp"
 #include "../src/host/ControlLoop.hpp"
 #include "../src/host/GpioEncoderInput.hpp"  // QuadratureDecoder
@@ -384,6 +385,63 @@ int main(){
 
         watcher.pollChanges([&](Parameter&){ reported++; });
         expect(reported == 1, "watcher reports each change only once");
+    }
+
+    // raw MIDI byte-stream parsing (the --midi-raw input path)
+    {
+        MidiStreamParser parser;
+        std::vector<MidiEvent> events;
+        auto collect = [&](const MidiEvent& e){ events.push_back(e); };
+
+        // dense chord in running status: one 0x90, then note/velocity pairs
+        const uint8_t chord[] = {0x90, 60, 100, 62, 101, 64, 102};
+        parser.feed(chord, sizeof(chord), collect);
+        expect(events.size() == 3
+               && events[0].type == MidiEvent::Type::NoteOn && events[0].data1 == 60
+               && events[2].data1 == 64 && events[2].data2 == 102,
+               "parser: running-status chord yields every note-on");
+
+        // matching releases, also running status, with velocity-0 note-ons
+        events.clear();
+        const uint8_t offs[] = {0x90, 60, 0, 62, 0, 64, 0};
+        parser.feed(offs, sizeof(offs), collect);
+        expect(events.size() == 3
+               && events[0].type == MidiEvent::Type::NoteOff
+               && events[2].type == MidiEvent::Type::NoteOff && events[2].data1 == 64,
+               "parser: velocity-0 running status yields every note-off");
+
+        // a real-time byte (0xF8 clock) inside a message must be transparent
+        events.clear();
+        const uint8_t interleaved[] = {0x80, 60, 0xF8, 64};
+        parser.feed(interleaved, sizeof(interleaved), collect);
+        expect(events.size() == 1
+               && events[0].type == MidiEvent::Type::NoteOff && events[0].data1 == 60,
+               "parser: real-time byte inside a message is transparent");
+
+        // sysex is skipped and does not desynchronize the stream
+        events.clear();
+        const uint8_t sysex[] = {0xF0, 0x7E, 0x7F, 0x09, 0xF7, 0x90, 61, 99};
+        parser.feed(sysex, sizeof(sysex), collect);
+        expect(events.size() == 1 && events[0].data1 == 61,
+               "parser: sysex is skipped without losing framing");
+
+        // unsupported one-data-byte message (program change) is framed away
+        events.clear();
+        const uint8_t progChange[] = {0xC0, 5, 0x90, 62, 98};
+        parser.feed(progChange, sizeof(progChange), collect);
+        expect(events.size() == 1 && events[0].data1 == 62,
+               "parser: program change is framed and skipped");
+
+        // byte-by-byte delivery (raw reads can split anywhere)
+        events.clear();
+        const uint8_t split[] = {0xB0, 7, 100};
+        for(uint8_t byte : split){
+            parser.feedByte(byte, collect);
+        }
+        expect(events.size() == 1
+               && events[0].type == MidiEvent::Type::ControlChange
+               && events[0].data1 == 7 && events[0].data2 == 100,
+               "parser: messages split across reads reassemble");
     }
 
     // per-sample gain smoothing converges without overshoot

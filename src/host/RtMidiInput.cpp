@@ -95,15 +95,18 @@ void RtMidiInput::close(){
     ports_.clear();
 }
 
-std::string RtMidiInput::openedPortNames() const {
-    std::string names;
+std::string RtMidiInput::description() const {
+    std::string text = "ALSA sequencer (RtMidi), "
+                     + std::to_string(ports_.size()) + " port(s): ";
+    bool first = true;
     for(const auto& port : ports_){
-        if(!names.empty()){
-            names += ", ";
+        if(!first){
+            text += ", ";
         }
-        names += port->name;
+        text += port->name;
+        first = false;
     }
-    return names;
+    return text;
 }
 
 void RtMidiInput::rtCallback(double /*timestamp*/, std::vector<uint8_t>* message, void* userData){
@@ -114,7 +117,10 @@ void RtMidiInput::rtCallback(double /*timestamp*/, std::vector<uint8_t>* message
 
     MidiEvent event;
     if(!MidiEvent::fromRaw(message->data(), message->size(), event)){
-        return;  // message type we don't handle
+        // not necessarily an error (aftertouch etc.), but a growing count
+        // alongside missing notes points at malformed messages
+        port->owner->undecoded_.fetch_add(1, std::memory_order_relaxed);
+        return;
     }
 
     port->owner->received_.fetch_add(1, std::memory_order_relaxed);

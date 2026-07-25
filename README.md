@@ -41,6 +41,7 @@ VST3 / JUCE が規定している「プラグインとホストの契約」に�
 | `MidiBuffer.hpp` | 生 MIDI バイト列のデコード (`MidiEvent::fromRaw`) と、1 ブロック分のイベント列（sampleOffset 順・固定容量・アロケーションなし） | `IEventList` / `MidiBuffer` |
 | `Parameters.hpp` | 正規化値 [0,1] ↔ 実値のパラメータ。`std::atomic<float>` なので制御スレッドから書き、オーディオスレッドから読める（ロック不要）。書込みごとの変更カウンタを持ち、UI（LCD 等）がポーリングで変更検知できる | `IEditController` / `AudioProcessorValueTreeState` |
 | `SpscRingBuffer.hpp` | ロックフリー SPSC リングバッファ（MIDI スレッド → オーディオスレッドの受け渡し用、約 40 行） | — |
+| `MidiStreamParser.hpp` | 生 MIDI バイト列の逐次パーサ（ランニングステータス・リアルタイムバイト混入・SysEx フレーミング対応）。`--midi-raw` 経路で使用、オフラインで単体テスト可能 | — |
 
 ### `src/dsp/` — DSP 部品層
 
@@ -72,7 +73,9 @@ PipeWire、プラグインラッパ等）への移植ではこの層だけを書
 | ファイル | 内容 |
 |---|---|
 | `RtAudioOutput.{hpp,cpp}` | RtAudio の薄いラッパ。**5.x / 6.x の API 差（デバイスのインデックス/ID、例外/エラーコード）をこのファイルだけに隔離**。float32・プレーナ出力、xrun のアトミックなカウント（RT スレッドではログしない） |
-| `RtMidiInput.{hpp,cpp}` | RtMidi の薄いラッパ。既定で全入力ポートに接続（鍵盤＋MIDI コン併用可）。RtMidi はポートごとにコールバックスレッドを持つため、SPSC の単一プロデューサ制約を守るべく**ポートごとに専用キュー**を持ち、オーディオスレッドが全キューを排出する。満杯時はブロックせず破棄してカウント。ALSA シーケンサがない環境でも落ちない |
+| `MidiInput.hpp` | MIDI 入力バックエンドの共通インタフェース（pop・カウンタ・モニタ）。ホスト層はこの面しか見ない |
+| `RtMidiInput.{hpp,cpp}` | ALSA シーケンサ経由（RtMidi）の `MidiInput` 実装。既定で全入力ポートに接続（鍵盤＋MIDI コン併用可）。ポートごとに専用 SPSC キュー。満杯時はブロックせず破棄してカウント。ALSA シーケンサがない環境でも落ちない |
+| `RawMidiInput.{hpp,cpp}` | カーネル rawmidi 直読みの `MidiInput` 実装（`--midi-raw`）。シーケンサと RtMidi を完全にバイパスする最短経路。poll + ノンブロッキング read → `MidiStreamParser` |
 | `StandaloneHost.{hpp,cpp}` | 全体の糊。**3 スレッド（MIDI / オーディオ RT / メイン）の関係と役割はこのヘッダのコメント参照**。ブロックごとに MIDI キューを `MidiBuffer` へ排出して `Processor::process()` を呼ぶ。ドライバが確定したブロックサイズで `prepare()` してからストリーム開始 |
 | `ControlInput.hpp` | 物理コントロールの抽象2種: **絶対値** `ControlInput`（ポット等、[0,1] を返す）と**相対値** `RelativeControlInput`（エンコーダ等、前回からのステップ数を返す） |
 | `ControlLoop.hpp` | 制御スレッド。絶対値入力は EMA ノイズ除去＋書込み閾値を通して、相対値入力はデテント×ステップ幅で、`Parameter` に書く。両方式を併用可能 |
@@ -146,6 +149,15 @@ RtAudio 5.x (bullseye / bookworm) と 6.x (trixie 以降) のどちらでもビ�
 MIDI ポート未指定時は "Midi Through" 以外の**すべての入力ポートに接続**します。
 鍵盤からのノートと別デバイス（MIDI コン）からの CC を並行して受けられます。
 特定のデバイスだけ受けたい場合は `-m <index>` で単一ポートに限定してください。
+
+**MIDI バックエンドは2系統**あります:
+
+| バックエンド | 経路 | 向き不向き |
+|---|---|---|
+| 既定（ALSA シーケンサ / RtMidi） | USB ドライバ → rawmidi → seq ブリッジ → seq FIFO → RtMidi スレッド | 仮想ポートやソフト音源も見える。経路が長い |
+| `--midi-raw hw:X,Y,Z` | USB ドライバ → rawmidi → 直接 read() | **物理デバイス直結の最短経路**。高密度な和音でシーケンサ経由の取りこぼしが疑われるときはこちら |
+
+デバイス ID は `--list` の「Raw MIDI Devices」欄に表示されます（`--midi-raw` は複数指定可）。
 オーディオ API 未指定時は、デバイスを持つ **ALSA（直結）を優先**して選択します（下記「レイテンシ」参照）。
 `--param` は `ParameterSet` に登録された任意のパラメータを起動時に設定できます
 （不明な ID を渡すと利用可能な一覧が表示されます）。
@@ -259,6 +271,16 @@ LINE SELECT に相当）で編集対象を切り替える設計です。`cc_edit
 - **MIDI デバッグ**: `-v / --verbose` で受信した MIDI イベント（ノート/CC/ベンド）を
   ポート名付きで表示。表示は RT スレッドではなくメインスレッドが行うため、
   デバッグ中も音は途切れません
+- **MIDI の取りこぼし（音が鳴りっぱなし）の切り分け手順**:
+  1. `-v` で弾いて、消えるのがオンかオフか・警告（dropped / backlog / undecodable）が
+     出るかを確認する。警告が出ずにイベント自体が表示されない場合、損失は rtsynth より
+     上流（シーケンサ経路・USB・鍵盤本体）
+  2. rtsynth を止めて `aseqdump -p <ポート>` で同じフレーズを弾く。ここでも消えるなら
+     シーケンサ経路か鍵盤側の問題（鍵盤のファームウェア更新も確認する）
+  3. `--midi-raw hw:X,Y,Z`（ID は `--list`）に切り替えて弾く。カーネルドライバ直読みの
+     最短経路なので、シーケンサ経路起因の損失はこれで消える
+  4. それでも消える場合は鍵盤→USB 自体の問題（別ケーブル・別ポート・セルフパワーの
+     USB ハブ・鍵盤のファームウェアを試す）
 
 ## ハードウェア連携（ツマミ・スライダ・DAC）
 

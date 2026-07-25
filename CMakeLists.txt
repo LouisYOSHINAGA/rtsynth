@@ -40,16 +40,19 @@ endif()
 find_package(PkgConfig REQUIRED)
 pkg_check_modules(RTAUDIO REQUIRED IMPORTED_TARGET rtaudio)
 pkg_check_modules(RTMIDI REQUIRED IMPORTED_TARGET rtmidi)
+pkg_check_modules(ALSA REQUIRED IMPORTED_TARGET alsa)  # raw MIDI backend
 
 add_executable(rtsynth
     src/main.cpp
     src/host/GpioEncoderInput.cpp
     src/host/Mcp3008Input.cpp
+    src/host/RawMidiInput.cpp
     src/host/RtAudioOutput.cpp
     src/host/RtMidiInput.cpp
     src/host/StandaloneHost.cpp
 )
-target_link_libraries(rtsynth PRIVATE rtsynth_core PkgConfig::RTAUDIO PkgConfig::RTMIDI)
+target_link_libraries(rtsynth PRIVATE rtsynth_core PkgConfig::RTAUDIO PkgConfig::RTMIDI
+                                      PkgConfig::ALSA)
 if(TARGET rtsynth_pd)
     target_link_libraries(rtsynth PRIVATE rtsynth_pd)
 endif()
