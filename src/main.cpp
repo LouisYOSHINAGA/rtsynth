@@ -351,6 +351,7 @@ int main(int argc, char* argv[]){
 
     uint64_t lastXruns = 0;
     uint64_t lastDrops = 0;
+    uint64_t lastDeferrals = 0;
     // poll faster in verbose mode so MIDI/parameter prints feel immediate
     const auto pollPeriod = std::chrono::milliseconds(cli.host.verbose? 50 : 500);
     while(g_running.load()){
@@ -367,10 +368,16 @@ int main(int argc, char* argv[]){
             std::cerr << "[warning] audio under/overflow (total: " << xruns << ")" << std::endl;
             lastXruns = xruns;
         }
-        const uint64_t drops = host.midi().droppedCount() + host.midiOverflowCount();
+        const uint64_t drops = host.midi().droppedCount();
         if(drops != lastDrops){
             std::cerr << "[warning] MIDI events dropped (total: " << drops << ")" << std::endl;
             lastDrops = drops;
+        }
+        const uint64_t deferrals = host.midiDeferralCount();
+        if(deferrals != lastDeferrals){
+            std::cerr << "[warning] MIDI backlog deferred to next block (total: "
+                      << deferrals << ")" << std::endl;
+            lastDeferrals = deferrals;
         }
     }
 

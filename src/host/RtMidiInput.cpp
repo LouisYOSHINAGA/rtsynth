@@ -34,14 +34,17 @@ bool RtMidiInput::openOne(unsigned int index, const std::string& name){
     port->name = name;
     try{
         port->midi = std::make_unique<RtMidiIn>();
+        // configure BEFORE opening: RtMidi routes messages that arrive with
+        // no callback attached into an internal queue where they are lost
+        // to us, so attaching the callback after openPort() drops events
+        port->midi->ignoreTypes(true, true, true);  // sysex, timing, active sensing
+        port->midi->setCallback(&rtCallback, port.get());
         port->midi->openPort(index);
     }catch(const RtMidiError& e){
         std::cerr << "Failed to open MIDI port [" << index << "] " << name
                   << ": " << e.getMessage() << std::endl;
         return false;
     }
-    port->midi->ignoreTypes(true, true, true);  // sysex, timing, active sensing
-    port->midi->setCallback(&rtCallback, port.get());
     ports_.push_back(std::move(port));
     return true;
 }

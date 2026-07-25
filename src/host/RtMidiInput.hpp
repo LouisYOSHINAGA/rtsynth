@@ -70,7 +70,10 @@ private:
     struct Port {
         RtMidiInput* owner = nullptr;
         std::unique_ptr<RtMidiIn> midi;
-        SpscRingBuffer<MidiEvent, 1024> queue;
+        // generous size: this queue must absorb the backlog that builds up
+        // whenever the audio callback stalls (xrun recovery, CPU spikes) —
+        // losing a note-off here means a note hangs forever
+        SpscRingBuffer<MidiEvent, 4096> queue;
         SpscRingBuffer<MidiEvent, 256> monitorQueue;  // consumer: main thread
         std::string name;
     };

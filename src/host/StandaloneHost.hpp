@@ -50,8 +50,10 @@ public:
     RtAudioOutput& audio(){ return audio_; }
     RtMidiInput& midi(){ return midi_; }
 
-    // events lost because more arrived in one block than MidiBuffer holds
-    uint64_t midiOverflowCount() const { return midiOverflow_.load(std::memory_order_relaxed); }
+    // times a block's MidiBuffer filled up and the remaining events were
+    // deferred to the next block (nothing is lost; high values mean the
+    // audio callback is stalling or a controller is flooding CCs)
+    uint64_t midiDeferralCount() const { return midiOverflow_.load(std::memory_order_relaxed); }
 
 private:
     Processor& processor_;

@@ -25,10 +25,16 @@ bool StandaloneHost::start(const Options& options){
         [this](AudioBufferView& output){
             midiBuffer_.clear();
             MidiEvent event;
-            while(midi_.pop(event)){
-                if(!midiBuffer_.add(event)){  // offset 0: applied at block start
-                    midiOverflow_.fetch_add(1, std::memory_order_relaxed);
-                }
+            // Stop draining when the block buffer is full: the remaining
+            // events STAY in the lock-free queues and are processed next
+            // block (~ a few ms later). Never pop-then-discard — a burst
+            // after an audio stall could otherwise eat note-offs, leaving
+            // notes hanging forever.
+            while(!midiBuffer_.full() && midi_.pop(event)){
+                midiBuffer_.add(event);  // offset 0: applied at block start
+            }
+            if(midiBuffer_.full()){
+                midiOverflow_.fetch_add(1, std::memory_order_relaxed);
             }
             processor_.process(output, midiBuffer_);
         });

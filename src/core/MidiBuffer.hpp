@@ -89,6 +89,8 @@ public:
     void clear(){ size_ = 0; }
 
     size_t size() const { return size_; }
+    static constexpr size_t capacity(){ return Capacity; }
+    bool full() const { return size_ >= Capacity; }
     const MidiEvent* begin() const { return events_; }
     const MidiEvent* end() const { return events_ + size_; }
 
@@ -97,6 +99,6 @@ private:
     size_t size_ = 0;
 };
 
-using MidiBuffer = BasicMidiBuffer<256>;
+using MidiBuffer = BasicMidiBuffer<1024>;
 
 }  // namespace rtsynth
