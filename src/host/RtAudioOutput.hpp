@@ -78,6 +78,14 @@ public:
     unsigned int channels() const { return channels_; }
     uint64_t xrunCount() const { return xruns_.load(std::memory_order_relaxed); }
 
+    // Scheduling policy the audio thread actually got (sampled inside the
+    // first callback): -1 = not measured yet, otherwise SCHED_FIFO/RR/OTHER.
+    // RTAUDIO_SCHEDULE_REALTIME silently degrades to normal scheduling when
+    // the process lacks rtprio permission — the classic cause of crackling
+    // on a Raspberry Pi — so the host surfaces this instead of guessing.
+    int audioThreadPolicy() const { return threadPolicy_.load(std::memory_order_relaxed); }
+    bool audioThreadIsRealtime() const;
+
 private:
     static int rtCallback(void* outputBuffer, void* inputBuffer, unsigned int nFrames,
                           double streamTime, RtAudioStreamStatus status, void* userData);
@@ -96,6 +104,7 @@ private:
     unsigned int bufferFrames_ = 0;
     unsigned int channels_ = 2;
     std::atomic<uint64_t> xruns_{0};
+    std::atomic<int> threadPolicy_{-1};
 };
 
 }  // namespace rtsynth

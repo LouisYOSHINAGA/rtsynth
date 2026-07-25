@@ -58,6 +58,14 @@ public:
     // parameters through this; the audio thread reads them in process().
     ParameterSet& parameters(){ return parameters_; }
 
+    // Optional diagnostic: number of currently sounding voices, or -1 if
+    // the instrument doesn't report it. Read from the main thread while
+    // audio runs — an approximate, torn-read-tolerant gauge is fine. A
+    // count that climbs and stays pinned at the maximum reveals stuck
+    // voices (lost note-offs, stalled envelopes) and the CPU load they
+    // cause.
+    virtual int activeVoiceCount() const { return -1; }
+
 protected:
     // Populate in the subclass constructor via parameters_.add(...).
     ParameterSet parameters_;

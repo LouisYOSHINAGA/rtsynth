@@ -104,6 +104,17 @@ public:
         }
     }
 
+    // diagnostic gauge; may be read from another thread (approximate)
+    int activeCount() const {
+        int count = 0;
+        for(const auto& v : voices_){
+            if(v.isActive()){
+                count++;
+            }
+        }
+        return count;
+    }
+
 private:
     // newest held (non-releasing) voice playing `note`
     Voice* findVoiceForNote(uint8_t note){
