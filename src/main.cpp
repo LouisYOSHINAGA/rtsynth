@@ -48,7 +48,7 @@ void printUsage(const char* argv0){
         "  -m, --midi <index>   restrict MIDI input to one sequencer port index\n"
         "                       (default: connect to all ports, e.g. keyboard + CC box)\n"
         "  --midi-raw <dev>     read MIDI straight from a kernel rawmidi device,\n"
-        "                       bypassing the ALSA sequencer; repeatable\n"
+        "                       bypassing the ALSA sequencer; repeatable, or 'all'\n"
         "                       (e.g. --midi-raw hw:1,0,0 — ids shown by --list)\n"
         "  -r, --rate <hz>      sample rate (default: 44100)\n"
         "  -b, --buffer <n>     buffer size in frames (default: 256)\n"
@@ -71,9 +71,6 @@ void printUsage(const char* argv0){
         "                       DSP load, and show audio backend warnings\n"
         "  --midi-dump          also print the raw MIDI bytes as received\n"
         "                       (--midi-raw only; settles what the device really sent)\n"
-        "  --note-timeout <s>   release a note automatically after this many seconds\n"
-        "                       if its note-off never arrives (default 30, 0 = off);\n"
-        "                       a safety net for controllers that drop note-offs\n"
         "  -h, --help           show this help\n";
 }
 
@@ -248,8 +245,6 @@ bool parseArguments(int argc, char* argv[], CliOptions& cli, bool& exitRequested
                 if(const char* v = nextArg()) cli.maxVoices = std::stoi(v);
             }else if(arg == "--midi-dump"){
                 cli.midiDump = true;
-            }else if(arg == "--note-timeout"){
-                if(const char* v = nextArg()) cli.host.noteTimeoutSeconds = std::stof(v);
             }else if(arg == "-v" || arg == "--verbose"){
                 cli.host.verbose = true;
             }else{
@@ -297,6 +292,21 @@ int main(int argc, char* argv[]){
     if(cli.listRequested){
         listDevices(cli.host.audioApiName);
         return 0;
+    }
+
+    // "--midi-raw all" opens every raw device, which also covers devices
+    // that expose several MIDI cables as separate subdevices (a control
+    // surface keyboard typically does)
+    if(cli.host.rawMidiDevices.size() == 1 && cli.host.rawMidiDevices[0] == "all"){
+        cli.host.rawMidiDevices.clear();
+        for(const auto& [id, name] : rtsynth::RawMidiInput::listInputs()){
+            std::cout << "Raw MIDI device: " << id << "  " << name << std::endl;
+            cli.host.rawMidiDevices.push_back(id);
+        }
+        if(cli.host.rawMidiDevices.empty()){
+            std::cerr << "No raw MIDI device found." << std::endl;
+            return 1;
+        }
     }
 
     std::unique_ptr<rtsynth::Processor> synth = createSynth(cli.synthName);
@@ -419,7 +429,6 @@ int main(int argc, char* argv[]){
     int lastVoices = -1;
     int loadTicks = 0;
     uint64_t lastReadErrors = 0;
-    uint64_t lastRecovered = 0;
     bool schedulingReported = false;
     // poll faster in verbose mode so MIDI/parameter prints feel immediate
     const auto pollPeriod = std::chrono::milliseconds(cli.host.verbose? 50 : 500);
@@ -445,20 +454,21 @@ int main(int argc, char* argv[]){
         }
 
         if(cli.midiDump){
-            // one line per read burst: status bytes start a new group so the
-            // running-status structure of the stream stays visible
-            bool any = false;
-            host.midi().drainRawDump([&any](uint8_t byte){
-                if(byte & 0x80){
-                    if(any){
+            // One line per read() from the device, so a burst that is
+            // missing a message is visibly different from a burst that
+            // never arrived at all.
+            bool open = false;
+            host.midi().drainRawDump([&open](uint8_t byte, bool startsRead){
+                if(startsRead){
+                    if(open){
                         std::cout << std::endl;
                     }
-                    std::cout << "[bytes]";
-                    any = true;
+                    std::cout << "[read]";
+                    open = true;
                 }
                 std::printf(" %02X", byte);
             });
-            if(any){
+            if(open){
                 std::cout << std::endl;
             }
         }
@@ -511,13 +521,6 @@ int main(int argc, char* argv[]){
             std::cerr << "[warning] undecodable MIDI messages (total: " << undecoded
                       << ")" << std::endl;
             lastUndecoded = undecoded;
-        }
-        const uint64_t recovered = host.recoveredNoteCount();
-        if(recovered != lastRecovered){
-            std::cerr << "[warning] force-released a note whose note-off never arrived"
-                         " (total: " << recovered << "). The MIDI source is losing"
-                         " note-offs — check it with --midi-dump." << std::endl;
-            lastRecovered = recovered;
         }
         const uint64_t readErrors = host.midi().readErrorCount();
         if(readErrors != lastReadErrors){

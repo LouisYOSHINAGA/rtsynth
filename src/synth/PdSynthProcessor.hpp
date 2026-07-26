@@ -49,10 +49,12 @@ public:
     void reset() override;
     void process(AudioBufferView& output, const MidiBuffer& midi) override;
 
+    // counts only the voices the render loop actually visits, so the gauge
+    // matches what is really sounding under a --voices cap
     int activeVoiceCount() const override {
         int count = 0;
-        for(const PdVoice& voice : voices_){
-            if(voice.isActive()){
+        for(int v = 0; v < voiceLimit_; v++){
+            if(voices_[static_cast<size_t>(v)].isActive()){
                 count++;
             }
         }

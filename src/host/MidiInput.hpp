@@ -50,10 +50,16 @@ public:
     // --- byte-level dump (--midi-dump) ---------------------------------
     // Mirrors the undecoded wire bytes so the exact stream can be compared
     // against what the instrument does. This is how "did the keyboard send
-    // that note-off at all?" gets answered instead of guessed. Backends
-    // without access to raw bytes leave these as no-ops.
+    // that note-off at all?" gets answered instead of guessed.
+    //
+    // `startsRead` marks the first byte of each read() from the device,
+    // which distinguishes "the device sent a burst with one message
+    // missing" from "a whole transfer never arrived" — different faults
+    // with different culprits. Backends without access to raw bytes leave
+    // these as no-ops.
+    using RawByteFn = std::function<void(uint8_t byte, bool startsRead)>;
     virtual void setRawDumpEnabled(bool /*enabled*/){}
-    virtual void drainRawDump(const std::function<void(uint8_t)>& /*fn*/){}  // main thread
+    virtual void drainRawDump(const RawByteFn& /*fn*/){}  // main thread
 
     // one line for the startup log, e.g. backend + port names
     virtual std::string description() const = 0;

@@ -135,7 +135,7 @@ void RawMidiInput::readerThread(Device& device){
         if(bytes > 0){
             if(rawDump_.load(std::memory_order_relaxed)){
                 for(ssize_t i = 0; i < bytes; i++){
-                    device.rawQueue.push(buffer[i]);  // best effort
+                    device.rawQueue.push({buffer[i], i == 0});  // best effort
                 }
             }
             device.parser.feed(buffer, static_cast<size_t>(bytes), emit);
