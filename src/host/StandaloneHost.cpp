@@ -40,21 +40,10 @@ bool StandaloneHost::start(const Options& options){
             // notes hanging forever.
             while(!midiBuffer_.full() && activeMidi_->pop(event)){
                 midiBuffer_.add(event);  // offset 0: applied at block start
-                noteGuard_.observe(event);
             }
             if(midiBuffer_.full()){
                 midiOverflow_.fetch_add(1, std::memory_order_relaxed);
             }
-
-            // recover notes whose note-off the source never sent
-            noteGuard_.advance(output.numFrames());
-            noteGuard_.collectExpired([this](const MidiEvent& off){
-                if(!midiBuffer_.add(off)){
-                    return false;
-                }
-                recoveredNotes_.fetch_add(1, std::memory_order_relaxed);
-                return true;
-            });
 
             processor_.process(output, midiBuffer_);
         });
@@ -67,8 +56,6 @@ bool StandaloneHost::start(const Options& options){
     // prepare with the block size the driver actually chose, then start
     processor_.prepare(static_cast<double>(options.sampleRate),
                        static_cast<int>(audio_.actualBufferFrames()));
-    noteGuard_.prepare(static_cast<double>(options.sampleRate),
-                       options.noteTimeoutSeconds);
 
     if(!audio_.start()){
         activeMidi_->close();

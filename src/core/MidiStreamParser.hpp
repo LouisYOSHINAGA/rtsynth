@@ -45,6 +45,12 @@ public:
         }
 
         if(byte & 0x80){  // status byte
+            // Any status byte ends whatever came before, including a
+            // system-common message whose data bytes never arrived —
+            // otherwise a stale skip count would swallow the first data
+            // byte of this message and silently corrupt/lose a note.
+            pendingSkip_ = 0;
+
             if(byte == 0xF0){
                 inSysex_ = true;
                 status_ = 0;
