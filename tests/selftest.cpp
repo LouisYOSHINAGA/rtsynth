@@ -387,6 +387,49 @@ int main(){
         expect(reported == 1, "watcher reports each change only once");
     }
 
+    // regression: when voice stealing leaves TWO voices on the same note,
+    // one note-off must silence both. Reproduced deterministically:
+    // fill the pool, release two voices, steal the oldest for note 63
+    // (which fades before sounding), let the other one go free during that
+    // fade, then press 63 again so it lands on the freed voice — the
+    // stolen voice starts the same note when its fade ends.
+    {
+        VoiceAllocator<3> voices;
+        voices.prepare(kSampleRate);
+        voices.setEnvelopeParameters(0.001f, 0.001f, 1.0f, 0.001f);
+
+        float scratch[64];
+        auto render = [&](int frames){
+            for(int i = 0; i < frames; i++){
+                scratch[i] = 0.0f;
+            }
+            voices.render(scratch, frames, 1.0);
+        };
+
+        voices.noteOn(60, 100);   // oldest
+        voices.noteOn(61, 100);
+        voices.noteOn(62, 100);   // newest; stays held throughout
+        render(64);
+        expect(voices.activeCount() == 3, "pool is full before stealing");
+
+        voices.noteOff(60);       // both start releasing (~44 frames)
+        voices.noteOff(61);
+        voices.noteOn(63, 100);   // no free voice -> steals the oldest (60)
+        render(50);               // 61's voice frees; 60's steal fade (~132) runs
+        voices.noteOn(63, 100);   // same note again -> lands on the freed voice
+        for(int i = 0; i < 4; i++){
+            render(64);           // the stolen voice finishes fading and starts 63
+        }
+        expect(voices.activeCount() == 3, "two voices ended up holding note 63");
+
+        voices.noteOff(63);
+        for(int i = 0; i < 8; i++){
+            render(64);
+        }
+        expect(voices.activeCount() == 1,
+               "one note-off silences every voice holding that note");
+    }
+
     // runtime polyphony cap (--voices): never exceed it, still fully usable
     {
         SineSynthProcessor capped;
