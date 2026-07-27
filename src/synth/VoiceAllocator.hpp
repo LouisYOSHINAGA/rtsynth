@@ -61,22 +61,30 @@ public:
         }
     }
 
+    // A note-off must reach EVERY voice sounding this note, not just the
+    // newest one. Two voices can legitimately end up on the same note:
+    // when the pool is full, noteOn() hands the note to a steal target
+    // that first fades out, and if another voice frees up during that
+    // fade, a second press of the same note is allocated there — the
+    // stolen voice then starts the same note once its fade completes.
+    // Releasing only the newest left the older voice held forever (it
+    // droned until the same key was pressed and released again, which
+    // retriggered and then released it).
     void noteOff(uint8_t note){
-        Voice* voice = findVoiceForNote(note);
-        if(voice == nullptr){
-            // the note may still be waiting behind a steal fade
-            for(size_t i = 0; i < maxVoices_; i++){
-                if(voices_[i].hasPendingNote(note)){
-                    voices_[i].cancelPending();
-                    return;
+        for(size_t i = 0; i < maxVoices_; i++){
+            Voice& voice = voices_[i];
+            // a note still queued behind a steal fade must be cancelled,
+            // otherwise it starts sounding after its own note-off passed
+            if(voice.hasPendingNote(note)){
+                voice.cancelPending();
+            }
+            if(voice.isHeld() && !voice.isSustained() && voice.note() == note){
+                if(sustainPedal_){
+                    voice.sustain();
+                }else{
+                    voice.stopNote();
                 }
             }
-            return;
-        }
-        if(sustainPedal_){
-            voice->sustain();
-        }else{
-            voice->stopNote();
         }
     }
 
