@@ -4,11 +4,14 @@
 // benefit of the Processor abstraction: DSP can be tested headless in CI.
 
 #include <cmath>
+#include <atomic>
 #include <cstdio>
+#include <thread>
 #include <vector>
 
 #include "../src/core/MidiBuffer.hpp"
 #include "../src/core/MidiStreamParser.hpp"
+#include "../src/core/SpscRingBuffer.hpp"
 #include "../src/dsp/SmoothedValue.hpp"
 #include "../src/host/ControlLoop.hpp"
 #include "../src/host/GpioEncoderInput.hpp"  // QuadratureDecoder
@@ -450,6 +453,47 @@ int main(){
         MidiBuffer empty;
         expect(renderBlocks(capped, 4, empty) == 0.0f,
                "capped synth releases all notes");
+    }
+
+    // The MIDI thread -> audio thread handoff must never lose, duplicate or
+    // reorder an event: a single lost note-off leaves a note droning, and
+    // this queue is the only lock-free component on that path. Hammered
+    // here with a real producer thread and a deliberately small buffer so
+    // wrap-around and full conditions occur constantly.
+    {
+        constexpr int kEvents = 200000;
+        SpscRingBuffer<MidiEvent, 64> queue;
+        std::atomic<bool> producerDone{false};
+
+        std::thread producer([&]{
+            for(int i = 0; i < kEvents; i++){
+                MidiEvent event = MidiEvent::noteOn(0, 60, 100);
+                event.sampleOffset = i;              // sequence number
+                while(!queue.push(event)){           // spin while full
+                    std::this_thread::yield();
+                }
+            }
+            producerDone.store(true);
+        });
+
+        int received = 0;
+        bool ordered = true;
+        while(received < kEvents){
+            MidiEvent event;
+            if(queue.pop(event)){
+                if(event.sampleOffset != received){
+                    ordered = false;                 // lost, duplicated or reordered
+                    break;
+                }
+                received++;
+            }else if(producerDone.load() && received < kEvents){
+                std::this_thread::yield();           // drain the tail
+            }
+        }
+        producer.join();
+
+        expect(ordered && received == kEvents,
+               "SPSC queue delivers every event exactly once, in order");
     }
 
     // raw MIDI byte-stream parsing (the --midi-raw input path)
