@@ -8,6 +8,14 @@
 
 namespace rtsynth {
 
+// One wire byte plus whether it opened a read from the device (raw
+// backend) or a message (sequencer backend), used by the --midi-dump
+// diagnostic to group bytes on output.
+struct RawMidiByte {
+    uint8_t value = 0;
+    bool startsGroup = false;
+};
+
 // Runtime surface shared by the MIDI input backends:
 //
 //   RtMidiInput   ALSA sequencer via RtMidi — flexible (virtual ports,
@@ -52,12 +60,12 @@ public:
     // against what the instrument does. This is how "did the keyboard send
     // that note-off at all?" gets answered instead of guessed.
     //
-    // `startsRead` marks the first byte of each read() from the device,
-    // which distinguishes "the device sent a burst with one message
-    // missing" from "a whole transfer never arrived" — different faults
-    // with different culprits. Backends without access to raw bytes leave
-    // these as no-ops.
-    using RawByteFn = std::function<void(uint8_t byte, bool startsRead)>;
+    // `startsGroup` marks the first byte of each read() from the device
+    // (raw backend), which distinguishes "the device sent a burst with one
+    // message missing" from "a whole transfer never arrived" — different
+    // faults with different culprits. The sequencer backend only ever sees
+    // whole decoded messages, so there it marks each message instead.
+    using RawByteFn = std::function<void(uint8_t byte, bool startsGroup)>;
     virtual void setRawDumpEnabled(bool /*enabled*/){}
     virtual void drainRawDump(const RawByteFn& /*fn*/){}  // main thread
 

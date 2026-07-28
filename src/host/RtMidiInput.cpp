@@ -115,6 +115,12 @@ void RtMidiInput::rtCallback(double /*timestamp*/, std::vector<uint8_t>* message
         return;
     }
 
+    if(port->owner->rawDump_.load(std::memory_order_relaxed)){
+        for(size_t i = 0; i < message->size(); i++){
+            port->rawQueue.push({(*message)[i], i == 0});  // best effort
+        }
+    }
+
     MidiEvent event;
     if(!MidiEvent::fromRaw(message->data(), message->size(), event)){
         // not necessarily an error (aftertouch etc.), but a growing count
