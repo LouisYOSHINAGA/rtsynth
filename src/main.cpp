@@ -64,8 +64,9 @@ void printUsage(const char* argv0){
         "                       synth is expensive, try 8 or 6 if audio crackles)\n"
         "  -v, --verbose        print received MIDI events, parameter changes and\n"
         "                       DSP load, and show audio backend warnings\n"
-        "  --midi-dump          also print the raw MIDI bytes as received\n"
-        "                       (--midi-raw only; settles what the device really sent)\n"
+        "  --midi-dump          also print the raw MIDI bytes as received, grouped\n"
+        "                       per device read (--midi-raw) or per message;\n"
+        "                       settles what the device really sent\n"
         "  -h, --help           show this help\n";
 }
 
@@ -432,8 +433,8 @@ int main(int argc, char* argv[]){
             // missing a message is visibly different from a burst that
             // never arrived at all.
             bool open = false;
-            host.midi().drainRawDump([&open](uint8_t byte, bool startsRead){
-                if(startsRead){
+            host.midi().drainRawDump([&open](uint8_t byte, bool startsGroup){
+                if(startsGroup){
                     if(open){
                         std::cout << std::endl;
                     }

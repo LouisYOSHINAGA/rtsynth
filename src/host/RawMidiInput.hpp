@@ -65,9 +65,9 @@ public:
 
     void drainRawDump(const RawByteFn& fn) override {
         for(auto& device : devices_){
-            RawByte entry;
+            RawMidiByte entry;
             while(device->rawQueue.pop(entry)){
-                fn(entry.value, entry.startsRead);
+                fn(entry.value, entry.startsGroup);
             }
         }
     }
@@ -82,12 +82,6 @@ public:
     }
 
 private:
-    // one wire byte plus whether it opened a read() from the device
-    struct RawByte {
-        uint8_t value = 0;
-        bool startsRead = false;
-    };
-
     struct Device {
         RawMidiInput* owner = nullptr;
         snd_rawmidi_t* in = nullptr;
@@ -96,7 +90,7 @@ private:
         MidiStreamParser parser;               // reader thread only
         SpscRingBuffer<MidiEvent, 4096> queue;
         SpscRingBuffer<MidiEvent, 256> monitorQueue;  // consumer: main thread
-        SpscRingBuffer<RawByte, 8192> rawQueue;       // consumer: main thread
+        SpscRingBuffer<RawMidiByte, 8192> rawQueue;       // consumer: main thread
         std::thread thread;
     };
 

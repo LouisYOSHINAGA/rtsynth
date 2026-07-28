@@ -50,6 +50,21 @@ public:
         monitor_.store(enabled, std::memory_order_relaxed);
     }
 
+    void setRawDumpEnabled(bool enabled) override {
+        rawDump_.store(enabled, std::memory_order_relaxed);
+    }
+
+    // The sequencer hands us whole decoded messages, so each message —
+    // not each device read — opens a group here.
+    void drainRawDump(const RawByteFn& fn) override {
+        for(auto& port : ports_){
+            RawMidiByte entry;
+            while(port->rawQueue.pop(entry)){
+                fn(entry.value, entry.startsGroup);
+            }
+        }
+    }
+
     void drainMonitor(const MonitorFn& fn) override {
         for(auto& port : ports_){
             MidiEvent event;
@@ -68,6 +83,7 @@ private:
         // losing a note-off here means a note hangs forever
         SpscRingBuffer<MidiEvent, 4096> queue;
         SpscRingBuffer<MidiEvent, 256> monitorQueue;  // consumer: main thread
+        SpscRingBuffer<RawMidiByte, 8192> rawQueue;   // consumer: main thread
         std::string name;
     };
 
@@ -86,6 +102,7 @@ private:
     std::atomic<uint64_t> dropped_{0};
     std::atomic<uint64_t> undecoded_{0};
     std::atomic<bool> monitor_{false};
+    std::atomic<bool> rawDump_{false};
 };
 
 }  // namespace rtsynth
