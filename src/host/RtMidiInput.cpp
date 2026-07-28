@@ -1,3 +1,4 @@
+#include <algorithm>
 #include <iostream>
 #include "RtMidiInput.hpp"
 
@@ -70,8 +71,10 @@ bool RtMidiInput::open(int portIndex){
 
     // default: every real device, so notes and CC can come from different
     // hardware at the same time ("Midi Through" would only loop us back)
+    discovered_.clear();
     for(unsigned int i = 0; i < count; i++){
         const std::string name = probe_->getPortName(i);
+        discovered_.push_back(name);
         if(name.find("Midi Through") != std::string::npos){
             continue;
         }
@@ -96,15 +99,19 @@ void RtMidiInput::close(){
 }
 
 std::string RtMidiInput::description() const {
-    std::string text = "ALSA sequencer (RtMidi), "
-                     + std::to_string(ports_.size()) + " port(s): ";
-    bool first = true;
+    std::string text = "ALSA sequencer (RtMidi), connected "
+                     + std::to_string(ports_.size()) + " of "
+                     + std::to_string(std::max(discovered_.size(), ports_.size()))
+                     + " port(s):";
     for(const auto& port : ports_){
-        if(!first){
-            text += ", ";
+        text += "\n  [connected] " + port->name;
+    }
+    for(const std::string& name : discovered_){
+        const bool opened = std::any_of(ports_.begin(), ports_.end(),
+            [&name](const std::unique_ptr<Port>& p){ return p->name == name; });
+        if(!opened){
+            text += "\n  [skipped]   " + name;
         }
-        text += port->name;
-        first = false;
     }
     return text;
 }
