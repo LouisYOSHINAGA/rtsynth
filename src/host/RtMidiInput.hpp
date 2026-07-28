@@ -97,6 +97,11 @@ private:
     // instance used only for enumerating ports; each opened port gets its
     // own RtMidiIn (RtMidi binds one connection per instance)
     std::unique_ptr<RtMidiIn> probe_;
+    // every port the sequencer offered, so description() can show what was
+    // available versus what was actually connected — a device whose notes
+    // travel on a second port (many keyboards expose a separate control
+    // port) is otherwise silently invisible
+    std::vector<std::string> discovered_;
     std::vector<std::unique_ptr<Port>> ports_;
     std::atomic<uint64_t> received_{0};
     std::atomic<uint64_t> dropped_{0};
