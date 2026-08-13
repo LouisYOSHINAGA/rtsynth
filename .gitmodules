@@ -1,3 +1,4 @@
 [submodule "external/pd"]
 	path = external/pd
 	url = https://github.com/LouisYOSHINAGA/pd.git
+	branch = main
