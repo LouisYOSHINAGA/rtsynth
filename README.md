@@ -14,8 +14,13 @@ DSP コアをそのまま鳴らせます。コードベース全体が「音源�
 |---|---|
 | **鳴らす・使う**（ビルド、Pi のセットアップ、起動オプション、ハードウェア接続） | [第1部 使い方](#第1部-使い方) |
 | **中身を触る**（構造、拡張のしかた、デバッグ、既知の問題） | [第2部 開発・デバッグ](#第2部-開発デバッグ) |
+| **鳴らない・おかしい** | [2.7 デバッグ手順](#27-デバッグ手順) — 症状別（DAC が鳴らない / 音切れ / MIDI 取りこぼし） |
 
 第1部だけ読めば演奏できます。第2部は改造・移植・不具合調査のときに読んでください。
+
+新しい Pi にセットアップする場合は、**[1.2 Raspberry Pi のセットアップ](#12-raspberry-pi-のセットアップ)
+を上から順に全部**通してください。USB MIDI の取りこぼし対策と DAC の 3 段階手順は、
+どちらも「途中で止めると別の症状に化ける」種類の設定です。
 
 ---
 
@@ -65,65 +70,98 @@ dwc_otg.speed=1
 - 機器によって発現しやすさが違います（手元では Arturia KeyLab で頻発、KORG microKEY では
   再現せず）。特定の鍵盤だけで起きても、原因は鍵盤ではなくこの経路です
 
-### (2) オーディオ出力
+### (2) オーディオ出力（I2S DAC）
 
 Pi 本体のヘッドフォン端子は PWM 生成で品質が低いため、ハードシンセでは I2S DAC
 （PCM5102A 系の安価なモジュール、HiFiBerry DAC+ 等）を推奨します。
+**rtsynth のコード変更は不要**ですが、**OS 側の設定が 3 段階あり、途中で止めると
+かえって音が出なくなります**。順番どおり最後まで通してください。
+
+> 3 段階を飛ばしたときに何が起きるかは [2.7 の「DAC から音が出ない」](#dac-から音が出ない)
+> に症状別でまとめてあります。詰まったらそちらへ。
+
+#### 手順 1 — DAC を認識させる
 
 ```
 # /boot/firmware/config.txt
-dtparam=audio=off            # 内蔵オーディオを無効化（デバイス一覧が整理される）
+dtparam=audio=off            # 内蔵オーディオを無効化
 dtoverlay=hifiberry-dac      # PCM5102A 系はこのオーバーレイで動くものが多い
 ```
 
-再起動後 `./build/rtsynth --list` にカードが現れるので `-d` で指定します。**コード変更は不要**です。
-
-**DAC 導入後に `pcm device (default) won't open for output` で起動しない場合**
-
-**先に `/etc/asound.conf` を書いてください。** これが根本対処です:
-
-```
-pcm.!default { type hw  card sndrpihifiberry }
-ctl.!default { type hw  card sndrpihifiberry }
-```
-
-`card` に渡すのは**カード ID** です。`/proc/asound/cards` の角括弧内、
-`aplay -l` なら `カード 2: sndrpihifiberry [snd_rpi_hifiberry_dac]` の
-**`カード N:` の直後**の語で、その後ろの角括弧内（＝カード名）ではありません。
-間違えると `Cannot get card index for ...` になります。
+再起動して確認します。
 
 ```sh
-cat /proc/asound/cards            # ID を確認（角括弧の中）
-speaker-test -D default -c 2      # 鳴れば OK
+aplay -l
+#   カード 2: sndrpihifiberry [snd_rpi_hifiberry_dac], デバイス 0: ...
+#     サブデバイス: 1/1        ← ★「1/1」なら空き。「0/1」なら手順 2 が必要
+```
+
+**`サブデバイス:` の欄を必ず見てください。** `0/1` は「1 個しかないサブデバイスの
+空きが 0」＝**既に他のプロセスが掴んでいる**という意味です。
+
+#### 手順 2 — DAC を rtsynth 専用にする（これを飛ばすと `Device or resource busy`）
+
+Raspberry Pi OS デスクトップ版では **PipeWire が起動時に全てのサウンドカードを開き、
+再生していなくても離しません**（sink のプロパティが `node.pause-on-idle = "false"`
+になっているため）。この状態では rtsynth も `speaker-test` も
+`-16 デバイスもしくはリソースがビジー` で弾かれます。
+
+用途に応じてどちらかを選びます。**両方を中途半端に混ぜないこと。**
+
+| | A: デスクトップも使う | B: シンセ専用機にする |
+|---|---|---|
+| 方針 | PipeWire は残し、**DAC のカードだけ無視させる** | PipeWire を止め、ALSA を rtsynth が直接使う |
+| デスクトップの音 | HDMI から出る（そのまま使える） | 無し |
+| 手数 | 設定ファイル 1 枚 | 停止 3 つ + 手順 3 が**必須** |
+
+**A の場合** — `~/.config/wireplumber/wireplumber.conf.d/50-rtsynth.conf` を作成:
+
+```
+monitor.alsa.rules = [
+  { matches = [ { device.name = "alsa_card.platform-soc_sound" } ]
+    actions = { update-props = { device.disabled = true } } }
+]
+```
+
+`device.name` は `pactl list cards short` で確認できます。再ログイン後、
+`sudo fuser -v /dev/snd/*` に DAC の `pcmC*D0p` が出てこなければ成功です。
+
+**B の場合**:
+
+```sh
+systemctl --user mask pipewire pipewire-pulse wireplumber
+systemctl --user disable --now fluidsynth   # Pi OS 既定の MIDI 音源。任意
+sudo systemctl disable lightdm              # GUI 自体が不要なら
+```
+
+**B は手順 3 とセットです。** PipeWire を止めると ALSA の `default` も消えるため、
+手順 3 をやらないと「busy」ではなく「**どの `-d` でも開けない**」という、より厄介な
+状態になります（機序は [2.6](#rtaudio-5x-の-alsa-デバイス番号が二重採番になっている)）。
+
+#### 手順 3 — `default` を DAC に固定し、`-d` を使わない運用にする
+
+サウンドカードの番号は**起動ごとに入れ替わります**（USB MIDI キーボードもカードを
+1 枚作るため、DAC と登録順を取り合う）。`-d <番号>` での指定は原理的に安定しません。
+`/etc/asound.conf` で名前固定するのが唯一の解です。
+
+```
+pcm.!default { type plug  slave.pcm { type hw  card sndrpihifiberry } }
+ctl.!default { type hw    card sndrpihifiberry }
+```
+
+`card` に渡すのは**カード ID** です。`aplay -l` の
+`カード 2: sndrpihifiberry [snd_rpi_hifiberry_dac]` なら **`カード N:` の直後の語**で、
+その後ろの角括弧内（＝カード名）ではありません。間違えると
+`Cannot get card index for ...` になります。
+
+```sh
+cat /proc/asound/cards            # ID は角括弧の中
+speaker-test -D default -c 2      # ★ここで鳴ってから次へ
 ./build/rtsynth                   # -d は付けない
 ```
 
-理由は RtAudio 5.x の ALSA バックエンドにあります。**デバイス番号の付け方が
-「列挙するとき」と「開くとき」で食い違う**ためです（`RtAudio.cpp`）:
-
-| | ALSA `default` の扱い | ハードウェアデバイスの番号 |
-|---|---|---|
-| `getDeviceCount()` / `getDeviceInfo()`（＝`--list`） | `snd_ctl_open("default")` が**成功したときだけ** 0 番として数える | 0 または 1 から |
-| `probeDeviceOpen()`（＝実際に開く） | **常に** 0 番を `default` に予約 | **必ず** 1 から |
-
-`dtparam=audio=off` で内蔵カードを止めると ALSA の `default` が行き先を失い、
-`snd_ctl_open("default")` が失敗します。すると上の表の 2 行が 1 つズレます。
-HDMI (カード 0) と HiFiBerry (カード 2) がある場合:
-
-| 番号 | `--list` の解釈 | 実際に開かれるもの |
-|---|---|---|
-| 0 | vc4hdmi（開けないので非表示） | ALSA `default` → 失敗 |
-| 1 | **HiFiBerry**（一覧に出る） | `hw:0,0` = vc4hdmi → 失敗 |
-| 2 | （範囲外） | `hw:2,0` = HiFiBerry だが **`getDeviceCount()`=2 なので門前払い** |
-
-つまり**この状態では `-d` に何を渡しても DAC には届きません**。`--list` が表示する
-番号は必要な番号より 1 小さく、正しい番号は範囲外として弾かれます。
-`speaker-test -D hw:2,0` は鳴るのに rtsynth だけ起動しない、という状態はこれです。
-
-`asound.conf` で `default` を DAC に向けると `snd_ctl_open("default")` が成功するので
-**2 つの番号体系が一致し**、`-d` 無しでそのまま DAC が開きます（これが唯一の解です）。
-
-rtsynth はこの状態を起動時に検出し、上記の対処法をエラーメッセージとして表示します。
+`type plug` で `hw` を包んでいるのは、要求されたレート／フォーマットを自動変換
+させるためです。`type hw` 直だと DAC が受け付けない組み合わせでいきなり失敗します。
 
 ### (3) レイテンシと CPU
 
@@ -151,7 +189,7 @@ Description=rtsynth
 After=sound.target
 
 [Service]
-ExecStart=/home/pi/rtsynth/build/rtsynth -d <id> --adc 0=gain
+ExecStart=/home/pi/rtsynth/build/rtsynth --adc 0=gain
 Restart=on-failure
 User=pi
 LimitRTPRIO=95
@@ -165,7 +203,7 @@ WantedBy=multi-user.target
 ```sh
 ./build/rtsynth --list          # オーディオデバイスと MIDI ポートの一覧
 ./build/rtsynth                 # 既定デバイス・全 MIDI ポートで起動
-./build/rtsynth -d 2 -b 128 -g 0.3
+./build/rtsynth -b 128 -g 0.3
 ./build/rtsynth --synth pd      # PD シンセ (external/pd) で起動
 ./build/rtsynth --voices 8      # ポリフォニー上限を下げる（CPU 節約）
 ./build/rtsynth --param attack=0.001 --param release=0.1   # パラメータ初期値の上書き
@@ -178,7 +216,7 @@ WantedBy=multi-user.target
 | `-s, --synth <name>` | 音源の選択: `sine`（既定）/ `pd` |
 | `-l, --list` | オーディオデバイス・MIDI ポート・raw MIDI デバイスの一覧 |
 | `-a, --api <name>` | オーディオ API (`alsa` / `pulse` / `jack` …、既定は ALSA 直結) |
-| `-d, --device <id>` | オーディオ出力デバイス |
+| `-d, --device <id>` | オーディオ出力デバイス。**番号は起動ごとに変わるので常用しないこと**（[1.2 (2)](#2-オーディオ出力i2s-dac) 手順 3） |
 | `-m, --midi <index>` | MIDI 入力を 1 ポートに限定（既定は全ポート接続） |
 | `-r, -b, -g` | サンプルレート / バッファサイズ / マスターゲイン |
 | `-p, --param <id=v>` | パラメータの初期値（複数指定可） |
@@ -559,11 +597,37 @@ RtAudio がデバイス列挙時に開けないデバイス（音声シンクの
 警告で、**無害**です（そのデバイスが一覧からスキップされるだけ）。既定では非表示にしてあり、
 `--verbose` 指定時のみ表示されます。
 
-### `RtApiAlsa::probeDeviceOpen: pcm device (default) won't open for output.`
+### RtAudio 5.x の ALSA デバイス番号が二重採番になっている
 
-ALSA の `default` PCM が開けない状態です。I2S DAC 導入 (`dtparam=audio=off`) の直後に
-起きます。原因と対処は [1.2 (2)](#2-オーディオ出力) を参照してください
-（`-d <id>` で明示指定、または `/etc/asound.conf` で `default` を DAC に向ける）。
+`RtApiAlsa::probeDeviceOpen: pcm device (default) won't open for output.` や、
+「`speaker-test -D hw:2,0` は鳴るのに rtsynth だけどの `-d` でも起動しない」の原因です。
+RtAudio 5.x は **デバイスを数えるときと開くときで別のルールを使っています**（`RtAudio.cpp`）。
+
+| | ALSA `default` の扱い | ハードウェアデバイスの番号 |
+|---|---|---|
+| `getDeviceCount()` / `getDeviceInfo()`（＝`--list`） | `snd_ctl_open("default")` が**成功したときだけ** 0 番として数える | 0 または 1 から |
+| `probeDeviceOpen()`（＝実際に開く） | **常に** 0 番を `default` に予約 | **必ず** 1 から |
+
+`default` が開けるうちは両者が一致します。開けなくなった瞬間に数える側だけが 1 つ
+少なくなり、**全ハードウェアの「表示番号」が「開く番号」より 1 小さくなる**。そして
+最後のカードは `getDeviceCount()` の範囲外へ押し出され、`openStream()` がどの番号でも
+受け付けなくなります。HDMI (カード 0) と HiFiBerry (カード 2) の例:
+
+| 番号 | `--list` の解釈 | 実際に開かれるもの |
+|---|---|---|
+| 0 | vc4hdmi（開けないので非表示） | ALSA `default` → 失敗 |
+| 1 | **HiFiBerry**（一覧に出る） | `hw:0,0` = vc4hdmi → 失敗 |
+| 2 | （範囲外） | `hw:2,0` = HiFiBerry だが **`getDeviceCount()`=2 なので門前払い** |
+
+`default` が開けなくなる条件は、**I2S DAC 導入で普通に踏む手順そのもの**です
+（`dtparam=audio=off` で内蔵カードを止める ＋ PipeWire を止める）。
+`asound.conf` で `default` を DAC に向けると `snd_ctl_open("default")` が成功するので
+2 つの番号体系が一致し、`-d` 無しでそのまま DAC が開きます。これが唯一の解です
+（手順は [1.2 (2)](#2-オーディオ出力i2s-dac) の手順 3）。
+
+rtsynth 側の対処: `-d` 無指定時は候補を総当たりで開き、それでも駄目な場合は
+`snd_ctl_open("default")` を直接プローブして**「どの `-d` も無駄である」ことを明示**し、
+`asound.conf` の雛形とこのマシンのカード ID 一覧をエラーメッセージに出します。
 
 ## 2.7 デバッグ手順
 
@@ -596,6 +660,71 @@ ALSA の `default` PCM が開けない状態です。I2S DAC 導入 (`dtparam=au
 ```
 
 xrun・MIDI ドロップ等の警告カウンタは `-v` の指定に関わらず常に表示されます。
+
+### DAC から音が出ない
+
+I2S DAC を付けた直後に最も踏みやすい問題です。**症状は 2 種類あり、対処が正反対**なので、
+まず自分がどちらに居るかを確定してください。
+
+| 症状 | エラー | 状態 |
+|---|---|---|
+| **(a) 掴まれている** | `Device or resource busy` / `-16` | カードは正常。他のプロセス（ほぼ PipeWire）が開いている |
+| **(b) 届いていない** | `pcm device (default) won't open for output` / `-d` を変えても駄目 | ALSA の `default` が無く、RtAudio の番号がズレて DAC が到達不能 |
+
+#### 判定 — この 2 コマンドで確定する
+
+```sh
+aplay -l                       # 「サブデバイス: 0/1」なら (a)。「1/1」なら (a) ではない
+sudo fuser -v /dev/snd/*       # 誰が掴んでいるか
+```
+
+`fuser` の読み方が肝です。
+
+```
+                     USER        PID ACCESS COMMAND
+/dev/snd/pcmC1D0p:   lightdm     646 F...m  pipewire      ← ★これが (a) の犯人
+/dev/snd/controlC1:  lightdm     650 F....  wireplumber
+/dev/snd/seq:        lightdm     648 f....  fluidsynth    ← seq は MIDI。PCM とは無関係
+```
+
+- **`pcmC<N>D0p`** を掴んでいるものだけが (a) の原因です。`seq` は MIDI シーケンサなので、
+  ここに `fluidsynth` が居ても busy とは無関係です
+- **USER 列を必ず見ること。** `lightdm` と表示されたら、それは**ログイン画面のセッションが
+  動かしている別の PipeWire** です。この場合 `systemctl --user stop pipewire` は
+  **自分のユーザーのものしか止めないので効きません**（実際にこれで数時間溶かしています）
+
+補助的な兆候:
+
+- **`./rtsynth --list` に DAC が出てこない** → (a)。`--list` は各デバイスを実際に開いて
+  調べ、開けなかったものを一覧から落とす仕様なので、掴まれているカードは消えます
+- **`--list` には出るのに起動だけ失敗する** → (a) のタイミング差。ログイン直後は間に合っても、
+  数秒後に PipeWire が掴みに来ます
+
+#### 対処
+
+- **(a)** → [1.2 (2) 手順 2](#2-オーディオ出力i2s-dac) の A 案か B 案を入れる。
+  `sudo fuser -k /dev/snd/pcmC1D0p` でその場は直りますが、systemd が PipeWire を
+  再起動するので**次の起動で必ず再発します**。切り分け用と割り切ってください
+- **(b)** → [1.2 (2) 手順 3](#2-オーディオ出力i2s-dac) の `asound.conf`。
+  `-d` の値を変えて探すのは**原理的に無駄**です（機序は
+  [2.6](#rtaudio-5x-の-alsa-デバイス番号が二重採番になっている)）
+
+#### 効かなかった／悪化させた操作の記録
+
+同じ道を辿らないための記録です。
+
+| 操作 | 結果 |
+|---|---|
+| `systemctl --user stop pipewire ...` | 犯人が `lightdm` ユーザーのインスタンスだと**無効**。`fuser` の USER 列を見れば分かる |
+| `sudo systemctl disable lightdm` | greeter の PipeWire は消えるが、**SSH ログイン時に自分の PipeWire が起動する**ので翌日再発。デスクトップを失うだけだった |
+| `systemctl --user disable --now fluidsynth` | `fluidsynth` は `/dev/snd/seq` しか掴んでいない。**busy とは無関係**で、変数を増やしただけ |
+| PipeWire の mask 単独 | (a) は消えるが `default` も消えるため **(b) に転落する**。手順 3 とセットで初めて成立する |
+| `-d` の番号を総当たり | (b) では正しい番号が `getDeviceCount()` の範囲外にあり、**どれも当たらない** |
+
+一般則として、**症状 1 つに対して不可逆な操作（`disable` / `mask` / 設定ファイル）を
+同時に複数打たないこと**。可逆な操作（`stop`、`fuser -k`）で原因を確定させてから、
+恒久策を 1 つだけ入れるのが最短です。今回は不可逆な操作を短時間に重ねたため、
+どれが効いてどれが悪化させたのかが一時的に切り分け不能になりました。
 
 ### 音がプツプツ切れる（crackling）
 
