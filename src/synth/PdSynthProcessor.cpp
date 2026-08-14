@@ -47,6 +47,17 @@ const char* const kWaveformNames[] = {
 
 const char* const kEgNames[3] = {"DCO", "DCW", "DCA"};
 
+// prefix + number + suffix, built by appending. Written this way because
+// the obvious `"L" + std::to_string(n)` prepends to a temporary string,
+// and GCC 12 then loses track of that string's length and reports a bogus
+// -Wrestrict overlap warning for the memcpy the insert compiles to.
+std::string concat(const char* prefix, int number, const char* suffix = ""){
+    std::string text = prefix;
+    text += std::to_string(number);
+    text += suffix;
+    return text;
+}
+
 // Offset within a line parameter block addressed by `cc`, or -1 if `cc`
 // is not one of the EG controller ranges above.
 int lineParamOffsetForCc(uint8_t cc){
@@ -95,7 +106,7 @@ PdSynthProcessor::PdSynthProcessor(){
 }
 
 std::string PdSynthProcessor::lineParamId(int line, int offset){
-    std::string id = "line" + std::to_string(line + 1) + "_";
+    std::string id = concat("line", line + 1, "_");
     if(offset == kLineParamWaveformFirst){
         return id + "wave1";
     }
@@ -138,7 +149,7 @@ std::string PdSynthProcessor::paramIdString(int paramId){
     // know about yet. It still gets registered, so every id in [0,
     // kNumParams) has a handle and updating the submodule can never leave
     // a hole for the constructor and syncParameters() to walk into.
-    return "pd_param" + std::to_string(paramId);
+    return concat("pd_param", paramId);
 }
 
 std::string PdSynthProcessor::paramName(int paramId){
@@ -161,7 +172,7 @@ std::string PdSynthProcessor::paramName(int paramId){
 
     const int rel = paramId - kParamLine1Begin;
     const int offset = rel % kNumLineParams;
-    std::string name = "L" + std::to_string(rel / kNumLineParams + 1) + " ";
+    std::string name = concat("L", rel / kNumLineParams + 1, " ");
     if(offset == kLineParamWaveformFirst){
         return name + "Wave 1st";
     }
