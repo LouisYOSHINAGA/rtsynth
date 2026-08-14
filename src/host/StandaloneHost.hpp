@@ -43,9 +43,12 @@ public:
         unsigned int bufferFrames = 256;
         unsigned int channels = 2;
         bool requireMidi = true;
-        // debug: show backend warnings and mirror received MIDI into the
-        // monitor queues (printed by the main thread, see MidiInput)
-        bool verbose = false;
+        // debug: let the audio backend report devices it could not probe
+        bool verboseWarnings = false;
+        // debug: mirror received MIDI into the monitor queues, which the
+        // main thread drains to trace events and to attribute parameter
+        // changes to the CC that caused them (see MidiInput)
+        bool monitorMidi = false;
     };
 
     explicit StandaloneHost(Processor& processor) : processor_(processor){}

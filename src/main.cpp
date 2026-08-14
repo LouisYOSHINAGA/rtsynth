@@ -66,9 +66,17 @@ void printUsage(const char* argv0){
         "  --enc-step <size>    normalized change per encoder detent (default: 0.01)\n"
         "  --voices <n>         cap polyphony (fewer voices = less CPU; the pd\n"
         "                       synth is expensive, try 8 or 6 if audio crackles)\n"
-        "  -v, --verbose        print received MIDI events, parameter changes (with\n"
-        "                       the CC that caused them) and DSP load, and show\n"
-        "                       audio backend warnings\n"
+        "  -v, --verbose [what] trace what the synth is doing. With no argument\n"
+        "                       everything is traced; otherwise a comma-separated\n"
+        "                       list of:\n"
+        "                         midi      received MIDI events\n"
+        "                         param     parameter and preset changes, with the\n"
+        "                                   CC that caused them\n"
+        "                         load      DSP load meter, once a second\n"
+        "                         voices    active voice count when it changes\n"
+        "                         warnings  audio backend warnings\n"
+        "                         all       all of the above (the default)\n"
+        "                       e.g. -v midi,param   or   --verbose=load\n"
         "  --midi-dump          also print the raw MIDI bytes as received, grouped\n"
         "                       per device read (--midi-raw) or per message;\n"
         "                       settles what the device really sent\n"
@@ -138,6 +146,51 @@ void printMidiEvent(const std::string& portName, const rtsynth::MidiEvent& e){
 
 // --- option containers --------------------------------------------------------
 
+// Which kinds of -v output are on. Each flag gates exactly one kind of
+// console line, so a trace can be narrowed to what is being investigated
+// instead of drowning it in the other three.
+struct VerboseOptions {
+    bool midi = false;      // [midi]    every received MIDI event
+    bool param = false;     // [param] / [preset]  parameter and preset changes
+    bool load = false;      // [load]    DSP load meter, once a second
+    bool voices = false;    // [voices]  active voice count when it changes
+    bool warnings = false;  // audio backend (ALSA/RtAudio) warnings
+
+    bool any() const { return midi || param || load || voices || warnings; }
+    void enableAll(){ midi = param = load = voices = warnings = true; }
+};
+
+// Parses the comma-separated argument of -v. Returns false (after saying
+// which name was wrong) so a typo is a startup error rather than silently
+// missing output.
+bool parseVerboseCategories(const std::string& text, VerboseOptions& out){
+    for(size_t begin = 0; ; ){
+        const size_t comma = text.find(',', begin);
+        const std::string name = text.substr(begin, comma - begin);
+        if(name == "all"){
+            out.enableAll();
+        }else if(name == "midi"){
+            out.midi = true;
+        }else if(name == "param"){
+            out.param = true;
+        }else if(name == "load"){
+            out.load = true;
+        }else if(name == "voices"){
+            out.voices = true;
+        }else if(name == "warnings"){
+            out.warnings = true;
+        }else{
+            std::cerr << "Unknown -v category '" << name << "'. Available: "
+                         "midi, param, load, voices, warnings, all" << std::endl;
+            return false;
+        }
+        if(comma == std::string::npos){
+            return true;
+        }
+        begin = comma + 1;
+    }
+}
+
 struct EncoderMapping {
     unsigned int pinA;
     unsigned int pinB;
@@ -159,6 +212,7 @@ struct CliOptions {
     int preset = -1;                   // -1 = the instrument's default slot
     bool listPresets = false;
     bool midiDump = false;
+    VerboseOptions verbose;
 };
 
 // Returns false (after printing a message) when the arguments are invalid;
@@ -247,7 +301,16 @@ bool parseArguments(int argc, char* argv[], CliOptions& cli, bool& exitRequested
             }else if(arg == "--midi-dump"){
                 cli.midiDump = true;
             }else if(arg == "-v" || arg == "--verbose"){
-                cli.host.verbose = true;
+                // The category list is optional. Only take the next token
+                // when it cannot be another option, so "-v --synth pd"
+                // still means "-v" plus "--synth pd".
+                if(i + 1 < argc && argv[i + 1][0] != '-'){
+                    if(!parseVerboseCategories(argv[++i], cli.verbose)) return false;
+                }else{
+                    cli.verbose.enableAll();
+                }
+            }else if(arg.rfind("--verbose=", 0) == 0){
+                if(!parseVerboseCategories(arg.substr(10), cli.verbose)) return false;
             }else{
                 std::cerr << "Unknown option: " << arg << std::endl;
                 printUsage(argv[0]);
@@ -290,6 +353,11 @@ int main(int argc, char* argv[]){
     if(exitRequested){
         return 0;
     }
+    // the backend flags the host needs are derived from what is traced:
+    // the MIDI monitor queues feed both the [midi] lines and the CC that
+    // each [param] line is attributed to
+    cli.host.verboseWarnings = cli.verbose.warnings;
+    cli.host.monitorMidi = cli.verbose.midi || cli.verbose.param;
     if(cli.listRequested){
         listDevices(cli.host.audioApiName);
         return 0;
@@ -438,11 +506,8 @@ int main(int argc, char* argv[]){
     // ParameterDisplay and needs no other change.
     rtsynth::ParameterMonitor monitor(*synth);
     rtsynth::ConsoleParameterDisplay console;
-    if(cli.host.verbose){
+    if(cli.verbose.param){
         monitor.addDisplay(&console);
-    }
-    if(monitor.hasDisplays()){
-        host.midi().setMonitorEnabled(true);
     }
 
     uint64_t lastXruns = 0;
@@ -453,8 +518,9 @@ int main(int argc, char* argv[]){
     int loadTicks = 0;
     uint64_t lastReadErrors = 0;
     bool schedulingReported = false;
-    // poll faster in verbose mode so MIDI/parameter prints feel immediate
-    const auto pollPeriod = std::chrono::milliseconds(cli.host.verbose? 50 : 500);
+    // poll faster when something is being traced so the prints feel
+    // immediate; otherwise this loop only watches the error counters
+    const auto pollPeriod = std::chrono::milliseconds(cli.verbose.any()? 50 : 500);
     while(g_running.load()){
         std::this_thread::sleep_for(pollPeriod);
 
@@ -500,29 +566,29 @@ int main(int argc, char* argv[]){
         // monitor needs to see the events before it polls the parameters
         host.midi().drainMonitor(
             [&cli, &monitor](const std::string& portName, const rtsynth::MidiEvent& event){
-                if(cli.host.verbose){
+                if(cli.verbose.midi){
                     printMidiEvent(portName, event);
                 }
                 monitor.noteMidiEvent(event);
             });
         monitor.poll();
 
-        if(cli.host.verbose){
-            // DSP load: > ~0.8 means the render barely fits the deadline and
-            // crackling is a CPU problem (lower --voices / raise --buffer).
-            // Summarized once a second so it doesn't drown the MIDI trace.
-            if(++loadTicks >= 20){
-                loadTicks = 0;
-                const float peak = host.audio().peakLoad();
-                std::printf("[load] %.0f%% peak / %.0f%% now, %d voices%s\n",
-                            peak * 100.0f, host.audio().currentLoad() * 100.0f,
-                            synth->activeVoiceCount(),
-                            (peak > 0.8f)? "  <-- too high, lower --voices" : "");
-                host.audio().resetPeakLoad();
-            }
+        // DSP load: > ~0.8 means the render barely fits the deadline and
+        // crackling is a CPU problem (lower --voices / raise --buffer).
+        // Summarized once a second so it doesn't drown the MIDI trace.
+        if(cli.verbose.load && ++loadTicks >= 20){
+            loadTicks = 0;
+            const float peak = host.audio().peakLoad();
+            std::printf("[load] %.0f%% peak / %.0f%% now, %d voices%s\n",
+                        peak * 100.0f, host.audio().currentLoad() * 100.0f,
+                        synth->activeVoiceCount(),
+                        (peak > 0.8f)? "  <-- too high, lower --voices" : "");
+            host.audio().resetPeakLoad();
+        }
 
-            // stuck-voice gauge: a count pinned at the maximum while no key
-            // is held means voices never end (lost note-offs / stalled EGs)
+        // stuck-voice gauge: a count pinned at the maximum while no key
+        // is held means voices never end (lost note-offs / stalled EGs)
+        if(cli.verbose.voices){
             const int voices = synth->activeVoiceCount();
             if(voices != lastVoices){
                 std::cout << "[voices] " << voices << " active" << std::endl;
