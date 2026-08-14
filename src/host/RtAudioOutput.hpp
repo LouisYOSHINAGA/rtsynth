@@ -112,7 +112,7 @@ private:
                        RtAudio::StreamOptions& options, std::string& error);
 
     // diagnostic printed when nothing could be opened
-    static void reportDeviceHelp(const std::vector<AudioDeviceDesc>& devices);
+    void reportDeviceHelp(const std::vector<AudioDeviceDesc>& devices);
 
     // the RtAudio instance is created on first use so setApi() can be
     // called after construction (e.g. from parsed CLI options)

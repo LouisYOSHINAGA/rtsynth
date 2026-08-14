@@ -6,7 +6,42 @@
 #include <iostream>
 #include "RtAudioOutput.hpp"
 
+#if defined(__linux__)
+#include <alsa/asoundlib.h>
+#endif
+
 namespace rtsynth {
+
+namespace {
+
+#if defined(__linux__)
+void discardAlsaError(const char*, int, const char*, int, const char*, ...){}
+
+// Whether ALSA can open the control device named "default".
+//
+// This is not a cosmetic detail on RtAudio 5.x: its ALSA backend counts
+// devices as [ "default" if this succeeds ] + [ hardware devices ], but
+// *opens* them as [ "default" at id 0 ] + [ hardware devices from id 1 ].
+// The optional term is exactly this check, so when it fails the counting
+// runs one short of the opening, and the last hardware device lands
+// outside the range openStream() accepts. It then cannot be opened by any
+// id at all — which is what an I2S DAC plus dtparam=audio=off produces.
+bool alsaDefaultIsUsable(){
+    // a failing probe is the answer we are asking for, not something to
+    // print: ALSA would otherwise dump half a screen of config traces on
+    // top of the explanation we are about to give
+    snd_lib_error_set_handler(&discardAlsaError);
+    snd_ctl_t* handle = nullptr;
+    const bool usable = snd_ctl_open(&handle, "default", SND_CTL_NONBLOCK) >= 0;
+    if(usable){
+        snd_ctl_close(handle);
+    }
+    snd_lib_error_set_handler(nullptr);  // back to ALSA's own handler
+    return usable;
+}
+#endif
+
+}  // namespace
 
 RtAudio::Api RtAudioOutput::resolveApi(const std::string& apiName){
     if(!apiName.empty()){
@@ -103,6 +138,7 @@ bool RtAudioOutput::open(unsigned int deviceId, unsigned int sampleRate,
     const std::vector<AudioDeviceDesc> devices = listOutputDevices();
     if(devices.empty()){
         std::cerr << "No audio output device found." << std::endl;
+        reportDeviceHelp(devices);
         return false;
     }
 
@@ -137,16 +173,13 @@ bool RtAudioOutput::open(unsigned int deviceId, unsigned int sampleRate,
             addCandidate(device.id);
         }
 #if !RTSYNTH_RTAUDIO_6
-        // RtApiAlsa numbers devices twice, and the two do not always
-        // agree: getDeviceCount()/getDeviceInfo() count the ALSA "default"
-        // PCM as id 0 only when snd_ctl_open("default") succeeds, while
-        // probeDeviceOpen() always reserves id 0 for it. When "default" is
-        // unusable — which is exactly what fitting an I2S DAC does, since
-        // dtparam=audio=off removes the card it points at — every hardware
-        // device is listed one lower than the id needed to open it. So
-        // sweep the whole openable range rather than only the listed ids.
-        // (openStream() rejects anything >= getDeviceCount(), so that is
-        // the end of what can be reached at all.)
+        // RtApiAlsa numbers devices twice and the two can disagree by one
+        // (see alsaDefaultIsUsable above), so a listed id is not always the
+        // id that opens that device. Sweeping every id openStream() accepts
+        // covers the shift where it is coverable; where it is not — the
+        // device pushed past the end of the range — nothing here can help,
+        // and reportDeviceHelp() says so rather than leaving the user to
+        // guess. openStream() rejects anything >= getDeviceCount().
         for(unsigned int id = 0; id < rt().getDeviceCount(); id++){
             addCandidate(id);
         }
@@ -186,27 +219,40 @@ bool RtAudioOutput::open(unsigned int deviceId, unsigned int sampleRate,
     return false;
 }
 
-// Printed when no device could be opened. The listed ids come from
-// RtAudio's enumeration, which on the 5.x ALSA backend is not necessarily
-// the numbering openStream() uses (see open()), so say so rather than
-// leaving the user retrying ids that cannot work.
+// Printed when no device could be opened. Retrying -d values is the
+// natural next move and, in the case diagnosed below, a waste of time —
+// so name the cause instead of listing ids that cannot work.
 void RtAudioOutput::reportDeviceHelp(const std::vector<AudioDeviceDesc>& devices){
-    std::cerr << "Output devices RtAudio enumerated:" << std::endl;
-    for(const AudioDeviceDesc& device : devices){
-        std::cerr << "  [" << device.id << "] " << device.name << std::endl;
+    if(!devices.empty()){
+        std::cerr << "Output devices RtAudio enumerated:" << std::endl;
+        for(const AudioDeviceDesc& device : devices){
+            std::cerr << "  [" << device.id << "] " << device.name << std::endl;
+        }
     }
-#if !RTSYNTH_RTAUDIO_6
-    std::cerr <<
-        "\nOn this RtAudio version the ALSA backend numbers devices differently\n"
-        "when opening than when listing, so an id above may open a different\n"
-        "device (or none). The reliable fix is to give ALSA a working 'default':\n"
-        "put your DAC's card name (the [...] name in `aplay -l`) in /etc/asound.conf\n"
-        "\n"
-        "  pcm.!default { type hw  card snd_rpi_hifiberry_dac }\n"
-        "  ctl.!default { type hw  card snd_rpi_hifiberry_dac }\n"
-        "\n"
-        "then run rtsynth without -d." << std::endl;
+
+#if !RTSYNTH_RTAUDIO_6 && defined(__linux__)
+    if(rt().getCurrentApi() == RtAudio::LINUX_ALSA && !alsaDefaultIsUsable()){
+        std::cerr <<
+            "\nALSA has no usable \"default\" device, and on this RtAudio version that\n"
+            "is fatal rather than inconvenient: its ALSA backend counts devices\n"
+            "without \"default\" but numbers them for opening as if it existed, so the\n"
+            "last sound card falls outside the range it accepts. No -d value reaches\n"
+            "it — the id --list shows for it is already one too low.\n"
+            "\n"
+            "Fix it by giving ALSA a \"default\" that points at your card, then run\n"
+            "rtsynth with no -d at all. In /etc/asound.conf (or ~/.asoundrc for just\n"
+            "this user), with the card name from the [...] column of `aplay -l`:\n"
+            "\n"
+            "  pcm.!default { type hw  card snd_rpi_hifiberry_dac }\n"
+            "  ctl.!default { type hw  card snd_rpi_hifiberry_dac }\n"
+            "\n"
+            "Verify with: speaker-test -D default -c 2" << std::endl;
+        return;
+    }
 #endif
+
+    std::cerr << "\nTry another id with -d, or check that the device is not already"
+                 " in use." << std::endl;
 }
 
 bool RtAudioOutput::start(){
