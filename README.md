@@ -80,25 +80,40 @@ dtoverlay=hifiberry-dac      # PCM5102A 系はこのオーバーレイで動く�
 
 **DAC 導入後に `pcm device (default) won't open for output` で起動しない場合**
 
-`dtparam=audio=off` で内蔵カードを止めると、ALSA の `default` PCM が行き先を失います。
-RtAudio 5.x の ALSA バックエンドは**デバイス番号 0 を常に ALSA の `default` PCM に
-固定**していて（`RtApiAlsa::probeDeviceOpen`）、`-d` 未指定時はそこを開こうとするため、
-`speaker-test -D hw:2,0` は鳴るのに rtsynth だけ起動しない、という状態になります。
-`--list` にも `default` は出てきません（プローブに失敗したデバイスは表示されないため）。
-
-現在は `-d` 未指定で `default` が開けなかった場合、**`--list` に出ている実デバイスへ
-自動的にフォールバック**して起動します（その旨の警告が出ます）。明示指定するなら:
-
-```sh
-./build/rtsynth -d 1          # --list に出た id
-```
-
-システム全体で直すなら `/etc/asound.conf` に（カード名は `aplay -l` の `[...]` の中身）:
+**先に `/etc/asound.conf` を書いてください。** これが根本対処です
+（カード名は `aplay -l` の `[...]` の中身）:
 
 ```
-pcm.!default { type hw  card sndrpihifiberry }
-ctl.!default { type hw  card sndrpihifiberry }
+pcm.!default { type hw  card snd_rpi_hifiberry_dac }
+ctl.!default { type hw  card snd_rpi_hifiberry_dac }
 ```
+
+書いたら `-d` を付けずに `./build/rtsynth` で起動します。
+
+理由は RtAudio 5.x の ALSA バックエンドにあります。**デバイス番号の付け方が
+「列挙するとき」と「開くとき」で食い違う**ためです（`RtAudio.cpp`）:
+
+| | ALSA `default` の扱い | ハードウェアデバイスの番号 |
+|---|---|---|
+| `getDeviceCount()` / `getDeviceInfo()`（＝`--list`） | `snd_ctl_open("default")` が**成功したときだけ** 0 番として数える | 0 または 1 から |
+| `probeDeviceOpen()`（＝実際に開く） | **常に** 0 番を `default` に予約 | **必ず** 1 から |
+
+`dtparam=audio=off` で内蔵カードを止めると ALSA の `default` が行き先を失い、
+`snd_ctl_open("default")` が失敗します。すると上の表の 2 行がズレて、
+
+- `-d` 無し → 0 番＝`default` を開こうとして失敗
+- `--list` が `[1]` と表示したデバイスに `-d 1` → 実際には**別のカード**（`hw:0,0`）が開く
+
+という、`speaker-test -D hw:2,0` は鳴るのに rtsynth だけ起動しない状態になります。
+`--list` に `default` が出てこないのも同じ理由です（プローブに失敗したデバイスは
+表示されないため）。
+
+`asound.conf` で `default` を DAC に向けると `snd_ctl_open("default")` が成功するので
+**2 つの番号体系が一致し**、`-d` 無しでそのまま DAC が開きます。
+
+なお rtsynth 側でも、`-d` 未指定で最初の候補が開けなかった場合は**開ける番号を
+総当たりでフォールバック**し、成功した番号を表示するようにしてあります
+（`-d <n>` にそのまま渡せます）。全滅した場合は上記の対処法を表示します。
 
 ### (3) レイテンシと CPU
 
