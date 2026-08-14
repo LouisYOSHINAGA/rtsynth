@@ -80,15 +80,23 @@ dtoverlay=hifiberry-dac      # PCM5102A 系はこのオーバーレイで動く�
 
 **DAC 導入後に `pcm device (default) won't open for output` で起動しない場合**
 
-**先に `/etc/asound.conf` を書いてください。** これが根本対処です
-（カード名は `aplay -l` の `[...]` の中身）:
+**先に `/etc/asound.conf` を書いてください。** これが根本対処です:
 
 ```
-pcm.!default { type hw  card snd_rpi_hifiberry_dac }
-ctl.!default { type hw  card snd_rpi_hifiberry_dac }
+pcm.!default { type hw  card sndrpihifiberry }
+ctl.!default { type hw  card sndrpihifiberry }
 ```
 
-書いたら `-d` を付けずに `./build/rtsynth` で起動します。
+`card` に渡すのは**カード ID** です。`/proc/asound/cards` の角括弧内、
+`aplay -l` なら `カード 2: sndrpihifiberry [snd_rpi_hifiberry_dac]` の
+**`カード N:` の直後**の語で、その後ろの角括弧内（＝カード名）ではありません。
+間違えると `Cannot get card index for ...` になります。
+
+```sh
+cat /proc/asound/cards            # ID を確認（角括弧の中）
+speaker-test -D default -c 2      # 鳴れば OK
+./build/rtsynth                   # -d は付けない
+```
 
 理由は RtAudio 5.x の ALSA バックエンドにあります。**デバイス番号の付け方が
 「列挙するとき」と「開くとき」で食い違う**ためです（`RtAudio.cpp`）:

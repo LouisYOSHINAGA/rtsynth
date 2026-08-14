@@ -3,6 +3,7 @@
 
 #include <algorithm>
 #include <chrono>
+#include <cstdio>
 #include <iostream>
 #include "RtAudioOutput.hpp"
 
@@ -38,6 +39,35 @@ bool alsaDefaultIsUsable(){
     }
     snd_lib_error_set_handler(nullptr);  // back to ALSA's own handler
     return usable;
+}
+
+// The sound cards with the id an asound.conf "card" entry needs. Worth
+// printing next to that advice because the id is the one field `aplay -l`
+// does not put in brackets, so it is the easy one to copy wrongly.
+std::string alsaCardList(){
+    std::string text;
+    snd_lib_error_set_handler(&discardAlsaError);
+    snd_ctl_card_info_t* info = nullptr;
+    if(snd_ctl_card_info_malloc(&info) == 0){
+        int card = -1;
+        while(snd_card_next(&card) == 0 && card >= 0){
+            char device[32];
+            std::snprintf(device, sizeof(device), "hw:%d", card);
+            snd_ctl_t* handle = nullptr;
+            if(snd_ctl_open(&handle, device, SND_CTL_NONBLOCK) < 0){
+                continue;
+            }
+            if(snd_ctl_card_info(handle, info) == 0){
+                text += "  card " + std::to_string(card) + ":  id "
+                      + snd_ctl_card_info_get_id(info) + "   ("
+                      + snd_ctl_card_info_get_name(info) + ")\n";
+            }
+            snd_ctl_close(handle);
+        }
+        snd_ctl_card_info_free(info);
+    }
+    snd_lib_error_set_handler(nullptr);
+    return text;
 }
 #endif
 
@@ -241,12 +271,19 @@ void RtAudioOutput::reportDeviceHelp(const std::vector<AudioDeviceDesc>& devices
             "\n"
             "Fix it by giving ALSA a \"default\" that points at your card, then run\n"
             "rtsynth with no -d at all. In /etc/asound.conf (or ~/.asoundrc for just\n"
-            "this user), with the card name from the [...] column of `aplay -l`:\n"
+            "this user):\n"
             "\n"
-            "  pcm.!default { type hw  card snd_rpi_hifiberry_dac }\n"
-            "  ctl.!default { type hw  card snd_rpi_hifiberry_dac }\n"
+            "  pcm.!default { type hw  card sndrpihifiberry }\n"
+            "  ctl.!default { type hw  card sndrpihifiberry }\n"
             "\n"
-            "Verify with: speaker-test -D default -c 2" << std::endl;
+            "\"card\" takes the card *id*: the bracketed name in /proc/asound/cards,\n"
+            "which in `aplay -l` is the word after \"card N:\" — NOT the name that\n"
+            "follows it in brackets.\n";
+        const std::string cards = alsaCardList();
+        if(!cards.empty()){
+            std::cerr << "\nThe cards on this machine:\n" << cards;
+        }
+        std::cerr << "\nVerify with: speaker-test -D default -c 2" << std::endl;
         return;
     }
 #endif
