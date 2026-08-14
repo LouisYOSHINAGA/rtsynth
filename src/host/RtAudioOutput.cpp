@@ -72,10 +72,36 @@ unsigned int RtAudioOutput::defaultOutputDevice(){
     return rt().getDefaultOutputDevice();
 }
 
+bool RtAudioOutput::tryOpenDevice(unsigned int deviceId, unsigned int sampleRate,
+                                  RtAudio::StreamOptions& options, std::string& error){
+    RtAudio::StreamParameters outputParams;
+    outputParams.deviceId = deviceId;
+    outputParams.nChannels = channels_;
+    outputParams.firstChannel = 0;
+
+#if RTSYNTH_RTAUDIO_6
+    if(rt().openStream(&outputParams, nullptr, RTAUDIO_FLOAT32, sampleRate,
+                       &bufferFrames_, &rtCallback, this, &options) != RTAUDIO_NO_ERROR){
+        error = rt().getErrorText();
+        return false;
+    }
+#else
+    try{
+        rt().openStream(&outputParams, nullptr, RTAUDIO_FLOAT32, sampleRate,
+                        &bufferFrames_, &rtCallback, this, &options);
+    }catch(const RtAudioError& e){
+        error = e.getMessage();
+        return false;
+    }
+#endif
+    return true;
+}
+
 bool RtAudioOutput::open(unsigned int deviceId, unsigned int sampleRate,
                          unsigned int bufferFrames, unsigned int channels,
                          RenderCallback callback){
-    if(listOutputDevices().empty()){
+    const std::vector<AudioDeviceDesc> devices = listOutputDevices();
+    if(devices.empty()){
         std::cerr << "No audio output device found." << std::endl;
         return false;
     }
@@ -85,11 +111,7 @@ bool RtAudioOutput::open(unsigned int deviceId, unsigned int sampleRate,
     bufferFrames_ = bufferFrames;
     sampleRate_ = static_cast<double>(sampleRate);
     channelPointers_.resize(channels);
-
-    RtAudio::StreamParameters outputParams;
-    outputParams.deviceId = (deviceId != kUseDefaultDevice)? deviceId : defaultOutputDevice();
-    outputParams.nChannels = channels;
-    outputParams.firstChannel = 0;
+    openedDeviceName_.clear();
 
     RtAudio::StreamOptions options;
     // non-interleaved -> the callback receives planar channel data
@@ -97,23 +119,65 @@ bool RtAudioOutput::open(unsigned int deviceId, unsigned int sampleRate,
     options.priority = 70;  // used by RtAudio when SCHEDULE_REALTIME succeeds
     options.streamName = "rtsynth";
 
-#if RTSYNTH_RTAUDIO_6
-    if(rt().openStream(&outputParams, nullptr, RTAUDIO_FLOAT32, sampleRate,
-                       &bufferFrames_, &rtCallback, this, &options) != RTAUDIO_NO_ERROR){
-        std::cerr << "Failed to open audio stream: " << rt().getErrorText() << std::endl;
-        return false;
+    // With an explicit -d there is one candidate and a failure is the
+    // user's to fix. Without one, the backend's "default" is only the
+    // first guess: RtAudio's ALSA 5.x backend hardwires device 0 to the
+    // ALSA "default" PCM, which normally follows the onboard card — and
+    // that card is exactly what gets disabled when an I2S DAC is fitted
+    // (dtparam=audio=off), leaving "default" pointing at nothing. The
+    // enumerated devices are the ones that demonstrably probed, so fall
+    // back to them instead of refusing to start.
+    std::vector<unsigned int> candidates;
+    if(deviceId != kUseDefaultDevice){
+        candidates.push_back(deviceId);
+    }else{
+        candidates.push_back(defaultOutputDevice());
+        for(const AudioDeviceDesc& device : devices){
+            if(device.id != candidates.front()){
+                candidates.push_back(device.id);
+            }
+        }
     }
-#else
-    try{
-        rt().openStream(&outputParams, nullptr, RTAUDIO_FLOAT32, sampleRate,
-                        &bufferFrames_, &rtCallback, this, &options);
-    }catch(const RtAudioError& e){
-        std::cerr << "Failed to open audio stream: " << e.getMessage() << std::endl;
-        return false;
-    }
-#endif
 
-    return true;
+    auto deviceName = [&devices](unsigned int id){
+        for(const AudioDeviceDesc& device : devices){
+            if(device.id == id){
+                return device.name;
+            }
+        }
+        return "device " + std::to_string(id);
+    };
+
+    std::string firstError;
+    for(size_t i = 0; i < candidates.size(); i++){
+        std::string error;
+        // openStream() writes the size the driver settled on, so each
+        // attempt has to start from the requested value again
+        bufferFrames_ = bufferFrames;
+        if(!tryOpenDevice(candidates[i], sampleRate, options, error)){
+            if(i == 0){
+                firstError = error;
+            }
+            continue;
+        }
+        openedDeviceName_ = deviceName(candidates[i]);
+        if(i > 0){
+            std::cerr << "[warning] the default audio device could not be opened ("
+                      << firstError << ")\n"
+                         "          falling back to [" << candidates[i] << "] "
+                      << openedDeviceName_ << "\n"
+                         "          pass -d <id> to choose explicitly, or point ALSA's"
+                         " 'default' at your DAC" << std::endl;
+        }
+        return true;
+    }
+
+    std::cerr << "Failed to open audio stream: " << firstError << std::endl;
+    std::cerr << "Available output devices (use -d <id>):" << std::endl;
+    for(const AudioDeviceDesc& device : devices){
+        std::cerr << "  [" << device.id << "] " << device.name << std::endl;
+    }
+    return false;
 }
 
 bool RtAudioOutput::start(){

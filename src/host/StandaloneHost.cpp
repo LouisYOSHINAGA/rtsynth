@@ -63,6 +63,7 @@ bool StandaloneHost::start(const Options& options){
     }
 
     std::cout << "Audio stream started: " << audio_.currentApiName() << ", "
+              << audio_.openedDeviceName() << ", "
               << options.sampleRate << " Hz, "
               << audio_.actualBufferFrames() << " frames/block, "
               << options.channels << " ch" << std::endl;

@@ -78,6 +78,28 @@ dtoverlay=hifiberry-dac      # PCM5102A 系はこのオーバーレイで動く�
 
 再起動後 `./build/rtsynth --list` にカードが現れるので `-d` で指定します。**コード変更は不要**です。
 
+**DAC 導入後に `pcm device (default) won't open for output` で起動しない場合**
+
+`dtparam=audio=off` で内蔵カードを止めると、ALSA の `default` PCM が行き先を失います。
+RtAudio 5.x の ALSA バックエンドは**デバイス番号 0 を常に ALSA の `default` PCM に
+固定**していて（`RtApiAlsa::probeDeviceOpen`）、`-d` 未指定時はそこを開こうとするため、
+`speaker-test -D hw:2,0` は鳴るのに rtsynth だけ起動しない、という状態になります。
+`--list` にも `default` は出てきません（プローブに失敗したデバイスは表示されないため）。
+
+現在は `-d` 未指定で `default` が開けなかった場合、**`--list` に出ている実デバイスへ
+自動的にフォールバック**して起動します（その旨の警告が出ます）。明示指定するなら:
+
+```sh
+./build/rtsynth -d 1          # --list に出た id
+```
+
+システム全体で直すなら `/etc/asound.conf` に（カード名は `aplay -l` の `[...]` の中身）:
+
+```
+pcm.!default { type hw  card sndrpihifiberry }
+ctl.!default { type hw  card sndrpihifiberry }
+```
+
 ### (3) レイテンシと CPU
 
 - **オーディオ API**: 既定で **ALSA 直結**を選びます。PulseAudio / PipeWire 経由は
@@ -509,6 +531,12 @@ rtsynth 側では修正していません。pd リポジトリ側で直すべき
 RtAudio がデバイス列挙時に開けないデバイス（音声シンクの無い HDMI 出力など）を試した際の
 警告で、**無害**です（そのデバイスが一覧からスキップされるだけ）。既定では非表示にしてあり、
 `--verbose` 指定時のみ表示されます。
+
+### `RtApiAlsa::probeDeviceOpen: pcm device (default) won't open for output.`
+
+ALSA の `default` PCM が開けない状態です。I2S DAC 導入 (`dtparam=audio=off`) の直後に
+起きます。原因と対処は [1.2 (2)](#2-オーディオ出力) を参照してください
+（`-d <id>` で明示指定、または `/etc/asound.conf` で `default` を DAC に向ける）。
 
 ## 2.7 デバッグ手順
 

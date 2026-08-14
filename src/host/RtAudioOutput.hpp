@@ -76,6 +76,9 @@ public:
 
     unsigned int actualBufferFrames() const { return bufferFrames_; }
     unsigned int channels() const { return channels_; }
+    // name of the device open() actually got the stream on, which is not
+    // always the one asked for (see the fallback in open())
+    const std::string& openedDeviceName() const { return openedDeviceName_; }
     uint64_t xrunCount() const { return xruns_.load(std::memory_order_relaxed); }
 
     // Scheduling policy the audio thread actually got (sampled inside the
@@ -102,6 +105,12 @@ private:
 
     static RtAudio::Api resolveApi(const std::string& apiName);
 
+    // One openStream() attempt. Returns false and fills `error` with the
+    // backend's message instead of throwing/returning a code, so open()
+    // can walk a list of candidate devices uniformly across RtAudio 5/6.
+    bool tryOpenDevice(unsigned int deviceId, unsigned int sampleRate,
+                       RtAudio::StreamOptions& options, std::string& error);
+
     // the RtAudio instance is created on first use so setApi() can be
     // called after construction (e.g. from parsed CLI options)
     RtAudio& rt();
@@ -113,6 +122,7 @@ private:
     std::vector<float*> channelPointers_;
     unsigned int bufferFrames_ = 0;
     unsigned int channels_ = 2;
+    std::string openedDeviceName_;
     std::atomic<uint64_t> xruns_{0};
     std::atomic<int> threadPolicy_{-1};
     std::atomic<float> load_{0.0f};
