@@ -12,13 +12,14 @@ struct MidiEvent {
         NoteOn,
         NoteOff,
         ControlChange,
+        ProgramChange,
         PitchBend,
     };
 
     Type type = Type::NoteOn;
     int32_t sampleOffset = 0;   // frame index within the block ([0, blockSize))
     uint8_t channel = 0;        // 0-15
-    uint8_t data1 = 0;          // note number / controller number
+    uint8_t data1 = 0;          // note number / controller number / program number
     uint8_t data2 = 0;          // velocity / controller value
     uint16_t pitchBend14 = 8192; // 14bit pitch bend value (center = 8192)
 
@@ -31,12 +32,16 @@ struct MidiEvent {
     static MidiEvent controlChange(uint8_t ch, uint8_t cc, uint8_t value, int32_t offset = 0){
         return {Type::ControlChange, offset, ch, cc, value, 8192};
     }
+    static MidiEvent programChange(uint8_t ch, uint8_t program, int32_t offset = 0){
+        return {Type::ProgramChange, offset, ch, program, 0, 8192};
+    }
     static MidiEvent pitchBend(uint8_t ch, uint16_t value14, int32_t offset = 0){
         return {Type::PitchBend, offset, ch, 0, 0, value14};
     }
 
     // Decode a raw MIDI message (status + data bytes). Returns false for
     // messages this synth does not handle (sysex, aftertouch, ...).
+    // Program change is two bytes long, everything else here is three.
     static bool fromRaw(const uint8_t* bytes, size_t size, MidiEvent& out, int32_t offset = 0){
         if(size < 2){
             return false;
@@ -58,6 +63,9 @@ struct MidiEvent {
             case 0xB0:
                 if(size < 3) return false;
                 out = controlChange(channel, bytes[1], bytes[2], offset);
+                return true;
+            case 0xC0:
+                out = programChange(channel, bytes[1], offset);
                 return true;
             case 0xE0:
                 if(size < 3) return false;

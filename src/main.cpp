@@ -19,7 +19,8 @@
 #include "host/ControlLoop.hpp"
 #include "host/GpioEncoderInput.hpp"
 #include "host/Mcp3008Input.hpp"
-#include "host/ParameterWatcher.hpp"
+#include "host/ParameterDisplay.hpp"
+#include "host/ParameterMonitor.hpp"
 #include "host/RawMidiInput.hpp"
 #include "host/StandaloneHost.hpp"
 #include "synth/SineSynthProcessor.hpp"
@@ -53,6 +54,9 @@ void printUsage(const char* argv0){
         "  -g, --gain <0..1>    master gain (default: 0.2)\n"
         "  -p, --param <id=v>   set a synth parameter, repeatable\n"
         "                       (e.g. --param attack=0.001 --param release=0.1)\n"
+        "  --preset <n>         start on preset n (= its Program Change number);\n"
+        "                       switch at runtime by sending Program Change\n"
+        "  --list-presets       list the instrument's presets, then exit\n"
         "  --adc <ch>=<id>      map an MCP3008 ADC channel to a parameter, repeatable\n"
         "                       (e.g. --adc 0=gain --adc 1=attack); needs SPI enabled\n"
         "  --adc-device <path>  SPI device of the ADC (default: /dev/spidev0.0)\n"
@@ -62,8 +66,9 @@ void printUsage(const char* argv0){
         "  --enc-step <size>    normalized change per encoder detent (default: 0.01)\n"
         "  --voices <n>         cap polyphony (fewer voices = less CPU; the pd\n"
         "                       synth is expensive, try 8 or 6 if audio crackles)\n"
-        "  -v, --verbose        print received MIDI events, parameter changes and\n"
-        "                       DSP load, and show audio backend warnings\n"
+        "  -v, --verbose        print received MIDI events, parameter changes (with\n"
+        "                       the CC that caused them) and DSP load, and show\n"
+        "                       audio backend warnings\n"
         "  --midi-dump          also print the raw MIDI bytes as received, grouped\n"
         "                       per device read (--midi-raw) or per message;\n"
         "                       settles what the device really sent\n"
@@ -101,7 +106,11 @@ void listDevices(const std::string& apiName){
     }
 }
 
-// --- verbose (-v) console output; an LCD would consume the same sources ------
+// --- verbose (-v) console output ---------------------------------------------
+//
+// Parameter values are NOT printed here: that is ParameterMonitor's job,
+// and it feeds the console backend and (later) an LCD from the same place.
+// Only the raw MIDI trace lives in main.
 
 void printMidiEvent(const std::string& portName, const rtsynth::MidiEvent& e){
     std::cout << "[midi] ";
@@ -117,16 +126,14 @@ void printMidiEvent(const std::string& portName, const rtsynth::MidiEvent& e){
             std::cout << "cc       ch " << +e.channel << "  cc " << +e.data1
                       << "  val " << +e.data2;
             break;
+        case rtsynth::MidiEvent::Type::ProgramChange:
+            std::cout << "program  ch " << +e.channel << "  number " << +e.data1;
+            break;
         case rtsynth::MidiEvent::Type::PitchBend:
             std::cout << "bend     ch " << +e.channel << "  value " << e.pitchBend14;
             break;
     }
     std::cout << "  (" << portName << ")" << std::endl;
-}
-
-void printParameterChange(rtsynth::Parameter& p){
-    std::cout << "[param] " << p.id() << " = " << p.get()
-              << (p.unit().empty()? "" : " ") << p.unit() << std::endl;
 }
 
 // --- option containers --------------------------------------------------------
@@ -149,6 +156,8 @@ struct CliOptions {
     std::string encoderChip = "/dev/gpiochip0";
     float encoderStep = 0.01f;
     int maxVoices = 0;                 // 0 = instrument default
+    int preset = -1;                   // -1 = the instrument's default slot
+    bool listPresets = false;
     bool midiDump = false;
 };
 
@@ -231,6 +240,10 @@ bool parseArguments(int argc, char* argv[], CliOptions& cli, bool& exitRequested
                 if(const char* v = nextArg()) cli.encoderStep = std::stof(v);
             }else if(arg == "--voices"){
                 if(const char* v = nextArg()) cli.maxVoices = std::stoi(v);
+            }else if(arg == "--preset"){
+                if(const char* v = nextArg()) cli.preset = std::stoi(v);
+            }else if(arg == "--list-presets"){
+                cli.listPresets = true;
             }else if(arg == "--midi-dump"){
                 cli.midiDump = true;
             }else if(arg == "-v" || arg == "--verbose"){
@@ -302,6 +315,33 @@ int main(int argc, char* argv[]){
         return 1;
     }
     std::cout << "Instrument: " << synth->name() << std::endl;
+
+    rtsynth::PresetBank* presets = synth->presets();
+    if(cli.listPresets){
+        if(presets == nullptr || presets->empty()){
+            std::cout << "This instrument has no presets." << std::endl;
+            return 0;
+        }
+        std::cout << "Presets (the number is the Program Change value):" << std::endl;
+        for(int i = 0; i < presets->count(); i++){
+            std::cout << "  " << i << "  " << presets->name(i) << std::endl;
+        }
+        return 0;
+    }
+    if(presets != nullptr && !presets->empty()){
+        if(cli.preset >= 0){
+            if(cli.preset >= presets->count()){
+                std::cerr << "No preset " << cli.preset << " (have 0.."
+                          << presets->count() - 1 << ")." << std::endl;
+                return 1;
+            }
+            presets->select(cli.preset);
+        }
+        std::cout << "Preset " << presets->current() << ": " << presets->currentName()
+                  << " (" << presets->count()
+                  << " slots, switch with Program Change)" << std::endl;
+    }
+
     if(cli.maxVoices > 0){
         synth->setMaxVoices(cli.maxVoices);
         std::cout << "Polyphony capped at " << cli.maxVoices << " voices" << std::endl;
@@ -392,10 +432,18 @@ int main(int argc, char* argv[]){
     std::signal(SIGTERM, handleSignal);
     std::cout << "Running. Press Ctrl+C to quit." << std::endl;
 
-    // watches for parameter changes from any source (MIDI CC, pots,
-    // encoders); the verbose print below is the console stand-in for a
-    // future LCD, which would consume the same watcher from a UI thread
-    rtsynth::ParameterWatcher watcher(synth->parameters());
+    // Reports what changed — from MIDI CC, pots, encoders or a preset
+    // switch — to every attached display. The console backend is the
+    // stand-in for the planned LCD, which registers here as a second
+    // ParameterDisplay and needs no other change.
+    rtsynth::ParameterMonitor monitor(*synth);
+    rtsynth::ConsoleParameterDisplay console;
+    if(cli.host.verbose){
+        monitor.addDisplay(&console);
+    }
+    if(monitor.hasDisplays()){
+        host.midi().setMonitorEnabled(true);
+    }
 
     uint64_t lastXruns = 0;
     uint64_t lastDrops = 0;
@@ -448,10 +496,18 @@ int main(int argc, char* argv[]){
             }
         }
 
-        if(cli.host.verbose){
-            host.midi().drainMonitor(printMidiEvent);
-            watcher.pollChanges(printParameterChange);
+        // the CC and the parameter it moved are reported together, so the
+        // monitor needs to see the events before it polls the parameters
+        host.midi().drainMonitor(
+            [&cli, &monitor](const std::string& portName, const rtsynth::MidiEvent& event){
+                if(cli.host.verbose){
+                    printMidiEvent(portName, event);
+                }
+                monitor.noteMidiEvent(event);
+            });
+        monitor.poll();
 
+        if(cli.host.verbose){
             // DSP load: > ~0.8 means the render barely fits the deadline and
             // crackling is a CPU problem (lower --voices / raise --buffer).
             // Summarized once a second so it doesn't drown the MIDI trace.

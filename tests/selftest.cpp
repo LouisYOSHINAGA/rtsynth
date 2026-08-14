@@ -15,6 +15,8 @@
 #include "../src/dsp/SmoothedValue.hpp"
 #include "../src/host/ControlLoop.hpp"
 #include "../src/host/GpioEncoderInput.hpp"  // QuadratureDecoder
+#include "../src/host/ParameterDisplay.hpp"
+#include "../src/host/ParameterMonitor.hpp"
 #include "../src/host/ParameterWatcher.hpp"
 #include "../src/synth/SineSynthProcessor.hpp"
 #ifdef RTSYNTH_HAVE_PD
@@ -316,6 +318,152 @@ int main(){
         expect(std::abs(line1DcoRate1->getNormalized() - 64.0f / 127.0f) < 0.01f,
                "pd: line 1's value is untouched by the retargeted CC14");
     }
+
+    // CC assignments added by the pd submodule bump: line select, detune,
+    // waveform and the Mono/Poly Mode On messages
+    {
+        PdSynthProcessor pd;
+        pd.prepare(kSampleRate, kBlockSize);
+
+        MidiBuffer cc;
+        cc.add(MidiEvent::controlChange(0, 9, 127));    // line select -> 1+2'
+        cc.add(MidiEvent::controlChange(0, 87, 100));   // detune fine
+        cc.add(MidiEvent::controlChange(0, 89, 40));    // waveform 1st
+        cc.add(MidiEvent::controlChange(0, 126, 0));    // Mono Mode On
+        renderBlocks(pd, 1, cc);
+
+        expect(pd.parameters().byId("line_select")->getNormalized() == 127.0f / 127.0f,
+               "pd: CC9 selects the played line");
+        expect(std::abs(pd.parameters().byId("detune_fine")->getNormalized()
+                        - 100.0f / 127.0f) < 0.01f,
+               "pd: CC87 sets detune fine");
+        expect(std::abs(pd.parameters().byId("line1_wave1")->getNormalized()
+                        - 40.0f / 127.0f) < 0.01f,
+               "pd: CC89 sets the edit line's first waveform");
+        // the data byte of Mono Mode On is a channel count, not a value
+        expect(pd.parameters().byId("mono")->get() == 1.0f,
+               "pd: CC126 switches to mono whatever its data byte says");
+
+        MidiBuffer poly;
+        poly.add(MidiEvent::controlChange(0, 127, 0));  // Poly Mode On
+        renderBlocks(pd, 1, poly);
+        expect(pd.parameters().byId("mono")->get() == 0.0f,
+               "pd: CC127 switches back to poly");
+    }
+
+    // presets: Program Change switches slots and keeps each slot's edits
+    {
+        PdSynthProcessor pd;
+        pd.prepare(kSampleRate, kBlockSize);
+
+        PresetBank* bank = pd.presets();
+        expect(bank != nullptr && bank->count() > 1 && bank->current() == 0,
+               "pd: a factory bank with several presets starts on slot 0");
+
+        Parameter* rate = pd.parameters().byId("line1_dca_rate1");
+        const float slot0 = rate->get();
+
+        MidiBuffer edit;
+        edit.add(MidiEvent::controlChange(0, 102, 20));  // DCA EG rate 1
+        renderBlocks(pd, 1, edit);
+        const float edited = rate->get();
+        expect(edited != slot0, "pd: CC edits the live preset");
+
+        MidiBuffer program;
+        program.add(MidiEvent::programChange(0, 1));
+        renderBlocks(pd, 1, program);
+        expect(bank->current() == 1 && rate->get() != edited,
+               "pd: program change loads another preset");
+
+        MidiBuffer back;
+        back.add(MidiEvent::programChange(0, 0));
+        renderBlocks(pd, 1, back);
+        expect(bank->current() == 0 && rate->get() == edited,
+               "pd: returning to a preset restores the edits made to it");
+
+        MidiBuffer unknown;
+        unknown.add(MidiEvent::programChange(0, 120));
+        renderBlocks(pd, 1, unknown);
+        expect(bank->current() == 0, "pd: an out-of-range program change is ignored");
+
+    }
+
+    // every factory preset must actually make a sound (fresh instrument, so
+    // no edits from the case above are carried in)
+    {
+        PdSynthProcessor pd;
+        pd.prepare(kSampleRate, kBlockSize);
+        PresetBank* bank = pd.presets();
+        for(int i = 0; i < bank->count(); i++){
+            bank->select(i);
+            MidiBuffer note;
+            note.add(MidiEvent::noteOn(0, 60, 100));
+            const float p = renderBlocks(pd, 40, note);
+            expect(p > 0.01f && std::isfinite(p) && p <= 1.0f,
+                   ("pd: preset sounds: " + bank->name(i)).c_str());
+            MidiBuffer off;
+            off.add(MidiEvent::controlChange(0, 123, 0));
+            renderBlocks(pd, 300, off);
+        }
+    }
+
+    // what a display shows: the CC's target parameter and its decoded value
+    {
+        PdSynthProcessor pd;
+        Parameter* target = pd.parameterForCc(46);  // DCW EG rate 1, line 1
+        expect(target != nullptr && target->id() == "line1_dcw_rate1",
+               "pd: a CC reports the parameter it writes to");
+        expect(pd.parameterForCc(1) == nullptr,   // mod wheel: pd maps nothing to it
+               "pd: an unmapped CC reports no parameter");
+
+        pd.parameters().byId("line1_wave1")->setNormalized(3.0f / 7.0f);
+        expect(pd.describeValue(*pd.parameters().byId("line1_wave1")) == "Double Sine",
+               "pd: discrete values are described by name");
+        expect(pd.describeValue(*pd.parameters().byId("mono")) == "POLY",
+               "pd: switches are described by position");
+    }
+
+    // ParameterMonitor: one line carrying both the CC and the value it made
+    {
+        struct RecordingDisplay : ParameterDisplay {
+            std::vector<DisplayLine> lines;
+            std::vector<std::string> presets;
+            void showParameter(const DisplayLine& line) override { lines.push_back(line); }
+            void showPreset(int index, const std::string& name) override {
+                presets.push_back(std::to_string(index) + ":" + name);
+            }
+        } display;
+
+        PdSynthProcessor pd;
+        pd.prepare(kSampleRate, kBlockSize);
+        ParameterMonitor monitor(pd);
+        monitor.addDisplay(&display);
+
+        const MidiEvent cc = MidiEvent::controlChange(0, 46, 100);
+        MidiBuffer midi;
+        midi.add(cc);
+        renderBlocks(pd, 1, midi);
+        monitor.noteMidiEvent(cc);
+        monitor.poll();
+        expect(display.lines.size() == 1
+               && display.lines[0].id == "line1_dcw_rate1"
+               && display.lines[0].source == "CC 46 = 100"
+               && !display.lines[0].value.empty(),
+               "monitor: a CC and the parameter value it produced share one line");
+
+        display.lines.clear();
+        monitor.poll();
+        expect(display.lines.empty(), "monitor: nothing is reported twice");
+
+        // a preset replaces every value at once: report the preset, not ~120 lines
+        MidiBuffer program;
+        program.add(MidiEvent::programChange(0, 2));
+        renderBlocks(pd, 1, program);
+        monitor.poll();
+        expect(display.lines.empty() && display.presets.size() == 1
+               && display.presets[0] == "2:E.Piano",
+               "monitor: a preset switch is reported as one preset line");
+    }
 #endif
 
     // rotary encoder path: relative mapping nudges the parameter and clamps
@@ -534,12 +682,15 @@ int main(){
         expect(events.size() == 1 && events[0].data1 == 61,
                "parser: sysex is skipped without losing framing");
 
-        // unsupported one-data-byte message (program change) is framed away
+        // one-data-byte message (program change): decoded, and its shorter
+        // framing must not eat the note that follows
         events.clear();
         const uint8_t progChange[] = {0xC0, 5, 0x90, 62, 98};
         parser.feed(progChange, sizeof(progChange), collect);
-        expect(events.size() == 1 && events[0].data1 == 62,
-               "parser: program change is framed and skipped");
+        expect(events.size() == 2
+               && events[0].type == MidiEvent::Type::ProgramChange && events[0].data1 == 5
+               && events[1].type == MidiEvent::Type::NoteOn && events[1].data1 == 62,
+               "parser: program change is decoded without losing framing");
 
         // a truncated system-common message must not eat the next message's
         // data byte (F2 promises two data bytes but is cut short here)

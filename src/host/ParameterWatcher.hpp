@@ -29,10 +29,17 @@ namespace rtsynth {
 class ParameterWatcher {
 public:
     explicit ParameterWatcher(ParameterSet& parameters) : parameters_(parameters){
-        // adopt current counts so construction doesn't report a burst
-        lastCounts_.reserve(parameters_.size());
+        lastCounts_.resize(parameters_.size());
+        resync();  // adopt current counts so construction doesn't report a burst
+    }
+
+    // Adopt the current counts without reporting anything. Used when the
+    // whole snapshot was replaced at once (a preset recall writes every
+    // parameter), where listing all of them would be noise rather than
+    // information.
+    void resync(){
         for(size_t i = 0; i < parameters_.size(); i++){
-            lastCounts_.push_back(parameters_[i].changeCount());
+            lastCounts_[i] = parameters_[i].changeCount();
         }
     }
 

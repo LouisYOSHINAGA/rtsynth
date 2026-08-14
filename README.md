@@ -135,6 +135,8 @@ WantedBy=multi-user.target
 | `-m, --midi <index>` | MIDI 入力を 1 ポートに限定（既定は全ポート接続） |
 | `-r, -b, -g` | サンプルレート / バッファサイズ / マスターゲイン |
 | `-p, --param <id=v>` | パラメータの初期値（複数指定可） |
+| `--preset <n>` | 起動時のプリセット番号（[1.8](#18-プリセットprogram-change)） |
+| `--list-presets` | プリセット一覧を表示して終了 |
 | `--voices <n>` | ポリフォニー上限 |
 | `--adc`, `--enc` | 物理コントロールの割当（[1.6](#16-物理コントロールツマミエンコーダ)） |
 
@@ -156,12 +158,13 @@ WantedBy=multi-user.target
 |---|---|
 | Note On / Off | ベロシティ対応（2 乗カーブ）、ADSR 付き発音 |
 | Pitch Bend | 既定 ±2 半音（`bend_range` パラメータで 0〜24 半音） |
+| Program Change | プリセット切替（pd のみ、[1.8](#18-プリセットprogram-change)） |
 | CC7 (Volume) | マスターゲイン |
 | CC64 (Sustain) | サステインペダル（sine のみ、pd は未対応） |
 | CC120 (All Sound Off) | 即時全消音 |
 | CC123 (All Notes Off) | 全ノートリリース |
 
-pd 音源はさらに CC3 / CC14–30 / CC46–62 / CC102–118 で EG を編集できます（[1.7](#17-pd-シンセ)）。
+pd 音源はさらに多数の CC で音色パラメータを直接編集できます（[1.7](#17-pd-シンセ)）。
 
 ## 1.6 物理コントロール（ツマミ・エンコーダ）
 
@@ -198,12 +201,43 @@ EC11 等を GPIO に直結できます。A/B 端子を任意の GPIO へ、C（�
 専用スレッドで直交デコードします。ポット（絶対値）と違い「現在値からの相対操作」なので、
 MIDI CC と取り合いになっても値が飛びません。
 
-### 表示（LCD / OLED）
+### 表示（LCD / OLED）と `-v` のパラメータ表示
 
-現状の main ブランチには表示デバイスのドライバは入っていませんが、**表示に必要な
-変更検知の仕組みは実装済み**です（`ParameterWatcher`、[2.5](#25-拡張ガイド)）。
-`-v` を付けると同じ仕組みでコンソールに `[param] line1_dcw_level1 = 0.52` と表示され、
-これが LCD 表示のプレースホルダになります。
+表示デバイスのドライバはまだ入っていませんが、**「何を表示するか」を決める部分は
+表示先から独立した共通モジュールとして実装済み**です。
+
+```
+      MIDI CC ─┐
+    ADC ポット ─┼→ ParameterMonitor ──→ ParameterDisplay ─┬→ ConsoleParameterDisplay (-v)
+  エンコーダ ─┤   （何を出すか決める）  （共通インタフェース）└→ 将来の LCD ドライバ
+Program Change ┘
+```
+
+- `ParameterMonitor`（`src/host/ParameterMonitor.hpp`）が、CC・ツマミ・エンコーダ・
+  プリセット切替のどれで値が動いても検知し、表示 1 行ぶんの `DisplayLine`
+  （パラメータ ID / 表示名 / 整形済みの値 / 変更のきっかけ）を組み立てます
+- `ParameterDisplay`（`src/host/ParameterDisplay.hpp`）はそれを受け取るだけの
+  抽象インタフェースです。**LCD 対応はこのインタフェースを実装するだけ**で済み、
+  楽器側・ホスト側・`main.cpp` の変更は不要です（実装例はヘッダのコメント）
+- 表示先は複数登録できるので、`-v` のコンソール出力と LCD を同時に使えます
+- 呼び出しは UI スレッド（現状は `main` のポーリングループ）からのみで、
+  オーディオ／MIDI スレッドからは呼ばれません。**I2C / SPI のブロッキング書込みを
+  そのまま書いて構いません**
+
+`-v` を付けたときのコンソール出力は、この仕組みの動く実例です。
+**CC の値と、それによって動いた音色パラメータの現在値が 1 行にまとまります**。
+
+```
+[midi]  cc       ch 0  cc 46  val 100  (nanoKONTROL2 MIDI 1)
+[param] L1 DCW Rate 1 = 0.787 (1063 ms)   <- CC 46 = 100   (line1_dcw_rate1)
+[param] L1 Wave 1st = Pulse               <- CC 89 = 40    (line1_wave1)
+[param] Detune Fine = +35 (+58.3 cent)    <- CC 87 = 100   (detune_fine)
+[preset] 6: Mono Bass
+```
+
+値は生の [0,1] ではなく**楽器が解釈した意味で表示**されます（波形名・EG のステップ番号・
+EG レートのミリ秒換算・デチューンのセント数など）。この変換は `Processor::describeValue()`
+が担当するので、LCD 側でも同じ表示が何もせずに得られます。
 
 ## 1.7 PD シンセ
 
@@ -224,29 +258,70 @@ MIDI CC と取り合いになっても値が飛びません。
 | `line{1,2}_{dco,dcw,dca}_rate{1..8}` | 8 段 EG のレート |
 | `line{1,2}_{dco,dcw,dca}_level{1..7}` | 8 段 EG のレベル |
 | `line{1,2}_{dco,dcw,dca}_{sustain,end}` | サステイン点・エンド点 |
+| `cc_edit_line` | CC の編集対象ライン（0=Line1, 1=Line2） |
+| `mono_trigger` / `poly_trigger` | pd プラグインが CC126/127 を受けるためのダミー。スタンドアロンでは無効（`mono` を直接動かします） |
 
-**MIDI CC** は CZ 実機と同じ「EG のツマミ 1 系統を Line1/Line2 で共有し、CC3 で編集対象を
-切り替える」設計です。
+**MIDI CC** の割当は pd プラグイン側（`controller.cpp` の `getMidiControllerAssignment`）と
+同一です。CZ 実機と同じく「EG のツマミ 1 系統を Line1/Line2 で共有し、CC3 で編集対象を
+切り替える」設計になっています。
 
 | CC | 内容 |
 |---|---|
+| CC3 | **編集対象ライン切替**（値 <64 → Line1、≥64 → Line2） |
 | CC7 | Volume |
-| CC3 | 編集対象ライン切替（値 <64 → Line1、≥64 → Line2） |
+| CC9 | 発音ライン選択（Line1 / Line2 / 1+1' / 1+2'） |
+| CC85 / CC86 / CC87 | Detune オクターブ / ノート / ファイン |
+| CC89 / CC90 | 編集対象ラインの第1 / 第2 波形 |
 | CC14–30 | 編集対象ラインの DCO EG（レート1–8・レベル1–7・サステイン・エンド） |
 | CC46–62 | 同 DCW EG |
 | CC102–118 | 同 DCA EG |
+| CC126 / CC127 | Mono / Poly 切替（MIDI 標準の Mono/Poly Mode On） |
 
 現在の編集対象は `cc_edit_line` パラメータで確認・指定できます。
+どの CC がどのパラメータに効いたかは `-v` で確認するのが確実です（[1.6](#16-物理コントロールツマミエンコーダ)）。
 
 **使用上の注意**:
 
 - プラグインの素の状態は無音（エディタが値を入れる前提）のため、スタンドアロンでは
   デフォルト値を「鳴る初期パッチ」（Line1 ノコギリ波・高速アタック DCA・DCW スイープ）に
-  してあります
+  してあります。これがプリセット 0 になります（[1.8](#18-プリセットprogram-change)）
 - サステインペダル (CC64) は pd の Voice が未対応のため効きません
 - 波形切替パラメータの変更はオーディオスレッド上でジェネレータを再生成します
   （pd 本体と同じ挙動）。演奏中の頻繁な波形自動化は避けてください
 - **EG の設定によっては音が止まらなくなります**（pd 側の既知の不具合、[2.6](#26-既知の問題)）
+
+## 1.8 プリセット（Program Change）
+
+pd 音源は 8 個のファクトリプリセットを持ち、**MIDI Program Change で切り替え**られます。
+番号はそのまま Program Change の値（0 始まり）です。
+
+```sh
+./build/rtsynth --synth pd --list-presets   # 一覧
+./build/rtsynth --synth pd --preset 6       # Mono Bass で起動
+```
+
+| # | 名前 | 概要 |
+|---|---|---|
+| 0 | Init Saw | 初期パッチ（ノコギリ波・高速アタック・DCW スイープ） |
+| 1 | Soft Pad | 遅いアタックとリリースのパッド |
+| 2 | E.Piano | 減衰系（サステインなし）、Saw Pulse |
+| 3 | Brass | DCW がやや遅れて立ち上がるブラス |
+| 4 | Reso Sweep | Resonance I 波形＋1.5 秒の DCW スイープ |
+| 5 | Bell | 1+1' デチューンの減衰ベル |
+| 6 | Mono Bass | Mono（SOLO）、2 段 DCW の短いベース |
+| 7 | Dual Detune | 1+2'（Line1 ノコギリ＋Line2 矩形）のデチューン |
+
+**編集とプリセットの関係**（`src/core/PresetBank.hpp`）:
+
+- CC・ツマミ・エンコーダは**常に「今選ばれているプリセット」を直接編集**します。
+  プリセット用の別経路はありません
+- Program Change を受けると、**離れるスロットに現在の値を保存**してから次を読み込みます。
+  つまり戻ってくれば編集後の音が復元されます
+- 編集内容は RAM 上のみで、**再起動するとファクトリの状態に戻ります**（保存は未実装）
+- 存在しない番号の Program Change は無視されます
+
+`-v` で実行中にプリセットを切り替えると `[preset] 6: Mono Bass` の 1 行だけが出ます
+（約 120 個のパラメータが一度に書き換わるため、個別表示は抑制されます）。
 
 ---
 
@@ -285,6 +360,7 @@ VST3 / JUCE が規定している「プラグインとホストの契約」に�
 | `AudioBuffer.hpp` | プレーナ（チャンネル別配列）float32 バッファへの非所有ビュー | `AudioBusBuffers` / `AudioBuffer<float>` |
 | `MidiBuffer.hpp` | 生 MIDI バイト列のデコード (`MidiEvent::fromRaw`) と、1 ブロック分のイベント列（sampleOffset 順・固定容量・アロケーションなし） | `IEventList` / `MidiBuffer` |
 | `Parameters.hpp` | 正規化値 [0,1] ↔ 実値のパラメータ。`std::atomic<float>` なので制御スレッドから書き、オーディオスレッドから読める（ロック不要）。書込みごとの変更カウンタを持ち、UI（LCD 等）がポーリングで変更検知できる | `IEditController` / `AudioProcessorValueTreeState` |
+| `PresetBank.hpp` | `ParameterSet` のスナップショット（プリセット）を複数保持し、Program Change で切り替える。領域は構築時に確保済みなので `select()` はオーディオスレッドから呼べる。**編集は常にライブ値に対して行われ、スロットを離れるときに書き戻す**ので、CC 編集とプリセットが二重管理にならない | VST3 の program list |
 | `SpscRingBuffer.hpp` | ロックフリー SPSC リングバッファ（MIDI スレッド → オーディオスレッドの受け渡し用、約 40 行） | — |
 | `MidiStreamParser.hpp` | 生 MIDI バイト列の逐次パーサ（ランニングステータス・リアルタイムバイト混入・SysEx フレーミング対応）。`--midi-raw` 経路で使用、オフラインで単体テスト可能 | — |
 
@@ -327,6 +403,8 @@ PipeWire、プラグインラッパ等）への移植ではこの層だけを書
 | `Mcp3008Input.{hpp,cpp}` | MCP3008（SPI 8ch 10bit ADC）の `ControlInput` 実装。配線図はヘッダのコメント参照 |
 | `GpioEncoderInput.{hpp,cpp}` | GPIO ロータリーエンコーダの `RelativeControlInput` 実装。GPIO キャラクタデバイス (uapi v2) でエッジイベントを受け、直交デコード（`QuadratureDecoder` は単体テスト可能に分離） |
 | `ParameterWatcher.hpp` | UI スレッド（LCD・コンソール等）向けの変更検知。全パラメータの変更カウンタをポーリングし「前回から変わったパラメータ」だけを報告 |
+| `ParameterDisplay.hpp` | 表示バックエンドの抽象（`showParameter` / `showPreset`）と、`-v` 用のコンソール実装。**LCD 対応はここを実装するだけ**。1 行ぶんのデータは `DisplayLine`（ID / 表示名 / 整形済みの値 / きっかけ）で、16x2 LCD が自分で配置できるようフィールドを分けてある |
+| `ParameterMonitor.hpp` | 「何を表示するか」を決める側。CC・ツマミ・エンコーダ・プリセット切替を 1 本のストリームにまとめ、登録された全 `ParameterDisplay` へ流す。**CC とその CC が動かしたパラメータ値を同じ行にまとめる**のもここ（`Processor::parameterForCc()` で対象を引く）。プリセット切替時は全パラメータを列挙せずプリセット名 1 行にまとめる |
 
 ### `src/main.cpp`
 
@@ -362,9 +440,10 @@ RT スレッドの規約はひとつだけです: **アロケーション・ロ�
 
 内容: 発音・リリース・クリップ・ボイススチールの安定性・スチール中ノートオフの
 スタックノート回帰・同ノート二重発音の回帰・サステインペダル・ピッチベンド・
-ポリフォニー上限・pd 音源と CC マッピング・エンコーダの直交デコード・
-`ParameterWatcher`・`MidiStreamParser` の各ケース・SPSC キューの 20 万イベント
-マルチスレッドストレステスト。CI にそのまま載せられます。
+ポリフォニー上限・pd 音源と CC マッピング・**全ファクトリプリセットが実際に発音するか**・
+**Program Change による切替と編集内容の保持**・**`ParameterMonitor` の表示内容**・
+エンコーダの直交デコード・`ParameterWatcher`・`MidiStreamParser` の各ケース・
+SPSC キューの 20 万イベントマルチスレッドストレステスト。CI にそのまま載せられます。
 
 ## 2.4 PD シンセの取り込み方
 
@@ -389,6 +468,16 @@ pd の DSP コア（`pd.{h,cpp}` / `eg.{h,cpp}` / `voice.{h,cpp}` / `const.h`）
 pd を更新するときは `cd external/pd && git pull` 後に rtsynth 側をコミットしてください
 （サブモジュールは特定コミットに固定されます）。
 
+**サブモジュール更新時の落とし穴**: pd 側で `ParamId` に列挙子が追加されると `kNumParams`
+が増えます。`PdSynthProcessor` はこの数だけ `Parameter` ハンドルの配列を持つため、
+登録側が手書きリストのままだと**未登録のハンドルが nullptr のまま残り、起動即クラッシュ**
+します（実際に `kParamMonoTrigger` / `kParamPolyTrigger` の追加で発生しました）。
+現在は `registerParameters()` が `0 .. kNumParams-1` を走査して必ず全 ID を登録し、
+rtsynth が知らない ID にも `pd_paramN` という名前で枠を用意するようにしてあります。
+CC 割当を増やされた場合は追従が必要（コンパイルは通るが黙って効かなくなる）なので、
+`controller.cpp` の `getMidiControllerAssignment` と
+`PdSynthProcessor::paramIdForCc()` を突き合わせてください。
+
 ## 2.5 拡張ガイド
 
 | やりたいこと | 触る場所 |
@@ -396,8 +485,10 @@ pd を更新するときは `cd external/pd && git pull` 後に rtsynth 側を�
 | 新しい音源方式 | `synth/` に `Processor` 実装を追加し、`main.cpp` の `--synth` 分岐に登録。ホスト層は変更不要（外部リポジトリの取り込みは `PdSynthProcessor` + submodule + shim が実例） |
 | フィルタ・LFO 等の部品追加 | `dsp/` に部品を追加し `Voice` に組み込む |
 | 新しい入力ハード（別 ADC・ボタン等） | `ControlInput` / `RelativeControlInput` を実装（`Mcp3008Input` / `GpioEncoderInput` が実例、約 60 行）。押しボタンも `GpioEncoderInput` と同じ GPIO エッジイベントで読める |
-| LCD / OLED 表示 | UI スレッドから `ParameterWatcher::pollChanges()` で「前回から変わったパラメータ」を受け取って描画（雛形は `ParameterWatcher.hpp` のコメント、動く実例は `-v` の `[param]` 表示）。I2C の SSD1306 OLED / HD44780+I2C バックパックが定番 |
-| パッチ（音色）の保存/読込 | `ParameterSet` を走査してシリアライズ |
+| LCD / OLED 表示 | `ParameterDisplay` を実装して `ParameterMonitor::addDisplay()` で登録するだけ（`main.cpp` の `ConsoleParameterDisplay` が動く実例、雛形は `ParameterDisplay.hpp` のコメント）。表示先は複数登録できるので `-v` と併用可。I2C の SSD1306 OLED / HD44780+I2C バックパックが定番 |
+| プリセットを増やす | `PdSynthProcessor::registerFactoryPresets()` に 1 行足す（差分だけ書くスパース定義） |
+| 他の音源にプリセットを持たせる | `PresetBank` をメンバに持ち、`Processor::presets()` を override して Program Change を `handleEvent()` で処理（`PdSynthProcessor` が実例） |
+| パッチ（音色）のファイル保存/読込 | `PresetBank` のスロットをシリアライズ（現状は RAM のみ） |
 | VST3 / JUCE プラグイン化 | `Processor` 実装を `processBlock` から呼ぶ薄いラッパを書く。`core`〜`synth` は無変更 |
 | 別オーディオバックエンド | `host/` 層のみ再実装 |
 

@@ -33,7 +33,9 @@ namespace rtsynth {
 // Unlike the plugin (whose fresh state is silent until the editor pushes
 // values), the parameter defaults here form a small init patch — sawtooth
 // on line 1 with a fast-attack DCA and a DCW sweep — so the synth makes a
-// sound out of the box.
+// sound out of the box. That patch is also the first slot of a factory
+// preset bank; MIDI Program Change switches slots, and CC keeps editing
+// whichever one is live (see PresetBank).
 //
 // Known caveat inherited from pd: switching a waveform parameter allocates
 // the new generator object on the audio thread (PD::setWaveformFirst uses
@@ -48,6 +50,10 @@ public:
     void prepare(double sampleRate, int maxBlockSize) override;
     void reset() override;
     void process(AudioBufferView& output, const MidiBuffer& midi) override;
+
+    PresetBank* presets() override { return &presets_; }
+    Parameter* parameterForCc(uint8_t cc) override;
+    std::string describeValue(const Parameter& parameter) const override;
 
     // counts only the voices the render loop actually visits, so the gauge
     // matches what is really sounding under a --voices cap
@@ -84,7 +90,17 @@ private:
     // parameter registration (constructor only)
     void registerParameters();
     static std::string lineParamId(int line, int offset);
+    static std::string paramIdString(int paramId);
+    static std::string paramName(int paramId);
     static double defaultParamValue(int paramId);
+
+    // factory preset bank (constructor only)
+    void registerFactoryPresets();
+
+    // CC -> parameter id, mirroring pd's controller.cpp; -1 when unmapped
+    int paramIdForCc(uint8_t cc) const;
+    // reverse lookup for describeValue(); -1 when the handle is not ours
+    int paramIdForHandle(const Parameter* parameter) const;
 
     // mirror of PDProcessor::applyParameter: dispatch one normalized value
     void applyParameter(int paramId, double value);
@@ -107,6 +123,7 @@ private:
     std::array<PdVoice, kMaxVoices> voices_;
     std::array<Parameter*, kNumPdParams> paramHandles_{};
     std::array<double, kNumPdParams> appliedValues_{};
+    PresetBank presets_{parameters_};
     std::vector<HeldNote> heldNotes_;   // mono (SOLO) mode, capacity reserved
     std::vector<float> monoScratch_;
     SmoothedValue volumeSmoother_;

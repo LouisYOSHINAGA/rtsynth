@@ -16,8 +16,8 @@ namespace rtsynth {
 //     of any other message and must be transparent
 //   - sysex framing (skipped) and system common messages (framed, skipped)
 // Complete channel messages are emitted as MidiEvents via the callback;
-// unsupported ones (program change, aftertouch, ...) are framed correctly
-// and skipped so the stream never desynchronizes.
+// unsupported ones (aftertouch, ...) are framed correctly and skipped so
+// the stream never desynchronizes.
 class MidiStreamParser {
 public:
     template <typename Fn>

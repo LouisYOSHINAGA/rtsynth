@@ -1,8 +1,11 @@
 #pragma once
 
+#include <string>
+
 #include "AudioBuffer.hpp"
 #include "MidiBuffer.hpp"
 #include "Parameters.hpp"
+#include "PresetBank.hpp"
 
 namespace rtsynth {
 
@@ -57,6 +60,29 @@ public:
     // The processor's public control surface. Hosts/UIs discover and set
     // parameters through this; the audio thread reads them in process().
     ParameterSet& parameters(){ return parameters_; }
+
+    // --- optional hooks a UI (console, LCD, ...) reads --------------------
+    //
+    // All three are read from a UI thread while audio runs, and none of
+    // them is required: an instrument that implements none still works,
+    // the display just shows raw numbers and no presets.
+
+    // The instrument's preset bank, or nullptr when it has none. The
+    // instrument itself selects slots from MIDI Program Change; a UI uses
+    // this to show which preset is live.
+    virtual PresetBank* presets(){ return nullptr; }
+
+    // The parameter a MIDI CC currently writes to, or nullptr when the
+    // controller is unmapped. Lets a UI report "CC 46 -> L1 DCW Rate 1"
+    // without duplicating the instrument's CC map. The answer may depend
+    // on instrument state (pd's CC blocks retarget between lines).
+    virtual Parameter* parameterForCc(uint8_t /*cc*/){ return nullptr; }
+
+    // Human-readable rendering of a parameter's current value, for
+    // parameters whose raw number means nothing on its own ("3: Pulse",
+    // "Step 2", "-7 semitones"). An empty string means "no special
+    // formatting" and the UI prints the number itself.
+    virtual std::string describeValue(const Parameter& /*parameter*/) const { return {}; }
 
     // Optional diagnostic: number of currently sounding voices, or -1 if
     // the instrument doesn't report it. Read from the main thread while

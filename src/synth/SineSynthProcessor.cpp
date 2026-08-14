@@ -112,6 +112,8 @@ void SineSynthProcessor::handleEvent(const MidiEvent& event){
                     break;
             }
             break;
+        case MidiEvent::Type::ProgramChange:
+            break;  // the reference synth has a single sound, so no presets
     }
 }
 
