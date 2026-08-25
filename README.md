@@ -14,6 +14,7 @@ DSP コアをそのまま鳴らせます。コードベース全体が「音源�
 |---|---|
 | **鳴らす・使う**（ビルド、Pi のセットアップ、起動オプション、ハードウェア接続） | [第1部 使い方](#第1部-使い方) |
 | **中身を触る**（構造、拡張のしかた、デバッグ、既知の問題） | [第2部 開発・デバッグ](#第2部-開発デバッグ) |
+| **ハードを組む**（部品の買い方・配線・はんだ不要の手順） | [README_HW.md](README_HW.md) — DAC / ツマミ / エンコーダ / LCD を 1 ステップずつ |
 | **鳴らない・おかしい** | [2.7 デバッグ手順](#27-デバッグ手順) — 症状別（DAC が鳴らない / 音切れ / MIDI 取りこぼし） |
 
 第1部だけ読めば演奏できます。第2部は改造・移植・不具合調査のときに読んでください。
@@ -224,6 +225,8 @@ WantedBy=multi-user.target
 | `--list-presets` | プリセット一覧を表示して終了 |
 | `--voices <n>` | ポリフォニー上限 |
 | `--adc`, `--enc` | 物理コントロールの割当（[1.6](#16-物理コントロールツマミエンコーダ)） |
+| `--lcd <addr>` | 16x2 I2C LCD にパラメータを表示（例 `--lcd 0x27`、[1.6](#表示lcd--oled-と--v-のパラメータ表示)） |
+| `--lcd-bus <path>` | LCD の I2C バス（既定 `/dev/i2c-1`） |
 | `-v, --verbose [種類]` | 動作トレース。引数なしで全部、カンマ区切りで種類を指定（[2.7](#診断オプション)） |
 
 `--param` に不明な ID を渡すと利用可能なパラメータ一覧が表示されます。
@@ -289,26 +292,51 @@ MIDI CC と取り合いになっても値が飛びません。
 
 ### 表示（LCD / OLED）と `-v` のパラメータ表示
 
-表示デバイスのドライバはまだ入っていませんが、**「何を表示するか」を決める部分は
-表示先から独立した共通モジュールとして実装済み**です。
+**16x2 キャラクタ LCD（HD44780 + PCF8574 I2C バックパック）に対応済み**です。
+`raspi-config` で I2C を有効化し、`i2cdetect -y 1` で出たアドレスを渡すだけです
+（配線 4 本・部品選定込みの手順は [README_HW.md の Step 5](README_HW.md#6-step-5-16x2-lcd--パラメータ表示配線4本)）。
+
+```sh
+./build/rtsynth --lcd 0x27                    # LCD にパラメータを表示
+./build/rtsynth --lcd 0x3f --lcd-bus /dev/i2c-0   # アドレス・バスの変更
+./build/rtsynth --lcd 0x27 -v param           # LCD とコンソールに同時表示
+```
+
+上段に「最後に動いたパラメータの表示名」、下段に「その値」が出ます。CC でもツマミでも
+エンコーダでも、動かした側が表示されます。Program Change でプリセットを切り替えると
+`PRESET 6` / `Mono Bass` の 2 行になります。
+
+```
++----------------+
+|L1 DCW Rate 1   |  <- DisplayLine.label（表示名。無ければ ID）
+|0.787 (1063 ms) |  <- DisplayLine.value（-v のコンソールと同じ整形）
++----------------+
+```
+
+「何を表示するか」は表示先から独立した共通モジュールが決めています。
 
 ```
       MIDI CC ─┐
     ADC ポット ─┼→ ParameterMonitor ──→ ParameterDisplay ─┬→ ConsoleParameterDisplay (-v)
-  エンコーダ ─┤   （何を出すか決める）  （共通インタフェース）└→ 将来の LCD ドライバ
-Program Change ┘
+  エンコーダ ─┤   （何を出すか決める）  （共通インタフェース）├→ LcdParameterDisplay ─→ TextDisplay
+Program Change ┘                                            │                          └→ I2cLcd1602
+                                                            └→ 追加の表示先（OLED 等）
 ```
 
 - `ParameterMonitor`（`src/host/ParameterMonitor.hpp`）が、CC・ツマミ・エンコーダ・
   プリセット切替のどれで値が動いても検知し、表示 1 行ぶんの `DisplayLine`
   （パラメータ ID / 表示名 / 整形済みの値 / 変更のきっかけ）を組み立てます
 - `ParameterDisplay`（`src/host/ParameterDisplay.hpp`）はそれを受け取るだけの
-  抽象インタフェースです。**LCD 対応はこのインタフェースを実装するだけ**で済み、
-  楽器側・ホスト側・`main.cpp` の変更は不要です（実装例はヘッダのコメント）
+  抽象インタフェースです。**別の表示先を足すのはこのインタフェースを実装するだけ**で済み、
+  楽器側・ホスト側の変更は不要です
+- `LcdParameterDisplay`（`src/host/LcdParameterDisplay.hpp`）がその LCD 実装で、
+  文字列を 2 行に割り付けるだけの薄い層です。実際の描画は `TextDisplay` 抽象
+  （`I2cLcd1602` = 実機、セルフテストではフェイク）が担当します
 - 表示先は複数登録できるので、`-v` のコンソール出力と LCD を同時に使えます
-- 呼び出しは UI スレッド（現状は `main` のポーリングループ）からのみで、
+- 呼び出しは UI スレッド（`main` のポーリングループ、既定 50 ms 間隔）からのみで、
   オーディオ／MIDI スレッドからは呼ばれません。**I2C / SPI のブロッキング書込みを
-  そのまま書いて構いません**
+  そのまま書いて構いません**。値が変わった行だけを書き直すので、放置中は I2C に
+  一切トラフィックが流れません
 
 `-v param`（または引数なしの `-v`）を付けたときのコンソール出力が、この仕組みの
 動く実例です。**CC の値と、それによって動いた音色パラメータの現在値が 1 行に
@@ -490,7 +518,10 @@ PipeWire、プラグインラッパ等）への移植ではこの層だけを書
 | `Mcp3008Input.{hpp,cpp}` | MCP3008（SPI 8ch 10bit ADC）の `ControlInput` 実装。配線図はヘッダのコメント参照 |
 | `GpioEncoderInput.{hpp,cpp}` | GPIO ロータリーエンコーダの `RelativeControlInput` 実装。GPIO キャラクタデバイス (uapi v2) でエッジイベントを受け、直交デコード（`QuadratureDecoder` は単体テスト可能に分離） |
 | `ParameterWatcher.hpp` | UI スレッド（LCD・コンソール等）向けの変更検知。全パラメータの変更カウンタをポーリングし「前回から変わったパラメータ」だけを報告 |
-| `ParameterDisplay.hpp` | 表示バックエンドの抽象（`showParameter` / `showPreset`）と、`-v` 用のコンソール実装。**LCD 対応はここを実装するだけ**。1 行ぶんのデータは `DisplayLine`（ID / 表示名 / 整形済みの値 / きっかけ）で、16x2 LCD が自分で配置できるようフィールドを分けてある |
+| `ParameterDisplay.hpp` | 表示バックエンドの抽象（`showParameter` / `showPreset`）と、`-v` 用のコンソール実装。**表示先を増やすのはここを実装するだけ**。1 行ぶんのデータは `DisplayLine`（ID / 表示名 / 整形済みの値 / きっかけ）で、16x2 LCD が自分で配置できるようフィールドを分けてある |
+| `LcdParameterDisplay.hpp` | `DisplayLine` をキャラクタ表示に割り付ける `ParameterDisplay` 実装（上段=表示名、下段=値、プリセットは `PRESET n`/名前）。桁数に合わせて切り詰め、**内容が変わった行だけ**書き直すので待機中の I2C トラフィックはゼロ |
+| `TextDisplay.hpp` | 小型キャラクタ表示の抽象（桁数・行数・1 行書換え・クリア）。実機とセルフテストのフェイクを差し替える境界 |
+| `I2cLcd1602.{hpp,cpp}` | HD44780 16x2 LCD + PCF8574 I2C バックパックのドライバ。カーネルの I2C キャラクタデバイス直叩き（外部ライブラリ不要）、4bit 初期化シーケンスと配線・アドレスの注意はヘッダのコメント |
 | `ParameterMonitor.hpp` | 「何を表示するか」を決める側。CC・ツマミ・エンコーダ・プリセット切替を 1 本のストリームにまとめ、登録された全 `ParameterDisplay` へ流す。**CC とその CC が動かしたパラメータ値を同じ行にまとめる**のもここ（`Processor::parameterForCc()` で対象を引く）。プリセット切替時は全パラメータを列挙せずプリセット名 1 行にまとめる |
 
 ### `src/main.cpp`
@@ -572,7 +603,7 @@ CC 割当を増やされた場合は追従が必要（コンパイルは通る�
 | 新しい音源方式 | `synth/` に `Processor` 実装を追加し、`main.cpp` の `--synth` 分岐に登録。ホスト層は変更不要（外部リポジトリの取り込みは `PdSynthProcessor` + submodule + shim が実例） |
 | フィルタ・LFO 等の部品追加 | `dsp/` に部品を追加し `Voice` に組み込む |
 | 新しい入力ハード（別 ADC・ボタン等） | `ControlInput` / `RelativeControlInput` を実装（`Mcp3008Input` / `GpioEncoderInput` が実例、約 60 行）。押しボタンも `GpioEncoderInput` と同じ GPIO エッジイベントで読める |
-| LCD / OLED 表示 | `ParameterDisplay` を実装して `ParameterMonitor::addDisplay()` で登録するだけ（`main.cpp` の `ConsoleParameterDisplay` が動く実例、雛形は `ParameterDisplay.hpp` のコメント）。表示先は複数登録できるので `-v` と併用可。I2C の SSD1306 OLED / HD44780+I2C バックパックが定番 |
+| 別の表示器（OLED・大きい LCD 等） | 16x2 I2C LCD は実装済み（`--lcd`）。別の表示器も `ParameterDisplay` を実装して `ParameterMonitor::addDisplay()` で登録するだけ（`ConsoleParameterDisplay` / `LcdParameterDisplay` が実例）。桁数だけ違う HD44780 系なら `TextDisplay` 実装の差し替えで済む。I2C の SSD1306 OLED が次の定番 |
 | プリセットを増やす | `PdSynthProcessor::registerFactoryPresets()` に 1 行足す（差分だけ書くスパース定義） |
 | 他の音源にプリセットを持たせる | `PresetBank` をメンバに持ち、`Processor::presets()` を override して Program Change を `handleEvent()` で処理（`PdSynthProcessor` が実例） |
 | パッチ（音色）のファイル保存/読込 | `PresetBank` のスロットをシリアライズ（現状は RAM のみ） |

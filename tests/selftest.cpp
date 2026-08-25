@@ -15,6 +15,7 @@
 #include "../src/dsp/SmoothedValue.hpp"
 #include "../src/host/ControlLoop.hpp"
 #include "../src/host/GpioEncoderInput.hpp"  // QuadratureDecoder
+#include "../src/host/LcdParameterDisplay.hpp"
 #include "../src/host/ParameterDisplay.hpp"
 #include "../src/host/ParameterMonitor.hpp"
 #include "../src/host/ParameterWatcher.hpp"
@@ -536,6 +537,58 @@ int main(){
 
         watcher.pollChanges([&](Parameter&){ reported++; });
         expect(reported == 1, "watcher reports each change only once");
+    }
+
+    // LCD backend: the monitor's lines reach the (fake) character display
+    {
+        struct FakeDisplay : TextDisplay {
+            std::string lines[2];
+            int columns() const override { return 16; }
+            int rows() const override { return 2; }
+            void writeLine(int row, const std::string& text) override {
+                lines[row] = text;
+            }
+            void clear() override { lines[0].clear(); lines[1].clear(); }
+        } fakeLcd;
+
+        SineSynthProcessor s5;
+        LcdParameterDisplay lcd(fakeLcd);
+        ParameterMonitor monitor(s5);
+        monitor.addDisplay(&lcd);
+
+        monitor.poll();
+        expect(lcd.writeCount() == 0, "lcd idles while nothing changes");
+
+        s5.parameters().byId("release")->set(0.25f);
+        monitor.poll();
+        expect(fakeLcd.lines[0] == "Release" && fakeLcd.lines[1] == "0.25 s",
+               "lcd shows the last-changed parameter and its value");
+
+        // a knob sweep moves the value under an unchanged name: only the
+        // value row may be redrawn, the I2C write for the name is saved
+        const int writesAfterFirstDraw = lcd.writeCount();
+        s5.parameters().byId("release")->set(0.5f);
+        monitor.poll();
+        expect(fakeLcd.lines[1] == "0.5 s"
+               && lcd.writeCount() == writesAfterFirstDraw + 1,
+               "lcd redraws only the row that changed");
+
+        monitor.poll();
+        expect(lcd.writeCount() == writesAfterFirstDraw + 1,
+               "lcd does not redraw without changes");
+
+        DisplayLine wide;
+        wide.id = "long_parameter_identifier";
+        wide.label = "A Name Longer Than Sixteen";
+        wide.value = "1234567890123456789";
+        lcd.showParameter(wide);
+        expect(fakeLcd.lines[0] == "A Name Longer Th"
+               && fakeLcd.lines[1] == "1234567890123456",
+               "lcd truncates both rows to the display width");
+
+        lcd.showPreset(2, "E.Piano");
+        expect(fakeLcd.lines[0] == "PRESET 2" && fakeLcd.lines[1] == "E.Piano",
+               "lcd shows a preset switch on both rows");
     }
 
     // regression: when voice stealing leaves TWO voices on the same note,

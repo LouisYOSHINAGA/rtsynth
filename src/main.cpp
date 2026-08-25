@@ -18,6 +18,8 @@
 
 #include "host/ControlLoop.hpp"
 #include "host/GpioEncoderInput.hpp"
+#include "host/I2cLcd1602.hpp"
+#include "host/LcdParameterDisplay.hpp"
 #include "host/Mcp3008Input.hpp"
 #include "host/ParameterDisplay.hpp"
 #include "host/ParameterMonitor.hpp"
@@ -64,6 +66,9 @@ void printUsage(const char* argv0){
         "                       repeatable (e.g. --enc 17,27=line1_dcw_level1)\n"
         "  --enc-chip <path>    GPIO chip of the encoders (default: /dev/gpiochip0)\n"
         "  --enc-step <size>    normalized change per encoder detent (default: 0.01)\n"
+        "  --lcd <addr>         show the last-changed parameter on a 16x2 I2C LCD\n"
+        "                       at this address (e.g. --lcd 0x27; find with i2cdetect)\n"
+        "  --lcd-bus <path>     I2C bus of the LCD (default: /dev/i2c-1)\n"
         "  --voices <n>         cap polyphony (fewer voices = less CPU; the pd\n"
         "                       synth is expensive, try 8 or 6 if audio crackles)\n"
         "  -v, --verbose [what] trace what the synth is doing. With no argument\n"
@@ -208,6 +213,8 @@ struct CliOptions {
     std::vector<EncoderMapping> encoderMappings;
     std::string encoderChip = "/dev/gpiochip0";
     float encoderStep = 0.01f;
+    int lcdAddress = -1;               // -1 = no LCD
+    std::string lcdBus = "/dev/i2c-1";
     int maxVoices = 0;                 // 0 = instrument default
     int preset = -1;                   // -1 = the instrument's default slot
     bool listPresets = false;
@@ -292,6 +299,12 @@ bool parseArguments(int argc, char* argv[], CliOptions& cli, bool& exitRequested
                 if(const char* v = nextArg()) cli.encoderChip = v;
             }else if(arg == "--enc-step"){
                 if(const char* v = nextArg()) cli.encoderStep = std::stof(v);
+            }else if(arg == "--lcd"){
+                if(const char* v = nextArg()){
+                    cli.lcdAddress = static_cast<int>(std::stoul(v, nullptr, 0));  // "0x27" ok
+                }
+            }else if(arg == "--lcd-bus"){
+                if(const char* v = nextArg()) cli.lcdBus = v;
             }else if(arg == "--voices"){
                 if(const char* v = nextArg()) cli.maxVoices = std::stoi(v);
             }else if(arg == "--preset"){
@@ -357,7 +370,8 @@ int main(int argc, char* argv[]){
     // the MIDI monitor queues feed both the [midi] lines and the CC that
     // each [param] line is attributed to
     cli.host.verboseWarnings = cli.verbose.warnings;
-    cli.host.monitorMidi = cli.verbose.midi || cli.verbose.param;
+    cli.host.monitorMidi = cli.verbose.midi || cli.verbose.param
+                           || cli.lcdAddress >= 0;
     if(cli.listRequested){
         listDevices(cli.host.audioApiName);
         return 0;
@@ -496,18 +510,35 @@ int main(int argc, char* argv[]){
         controlLoop.start();
     }
 
+    // optional 16x2 I2C LCD. It is a ParameterDisplay like the console
+    // one, so it is fed by the same ParameterMonitor below and shows the
+    // same lines --verbose prints; only the drawing differs.
+    rtsynth::I2cLcd1602 lcd;
+    rtsynth::LcdParameterDisplay lcdDisplay(lcd);
+    if(cli.lcdAddress >= 0){
+        if(!lcd.open(cli.lcdBus, static_cast<uint8_t>(cli.lcdAddress))){
+            return 1;
+        }
+        lcdDisplay.showStatus(synth->name(), presets != nullptr && !presets->empty()?
+                                             presets->currentName() : "ready");
+        std::cout << "LCD: 16x2 on " << cli.lcdBus << " addr 0x"
+                  << std::hex << cli.lcdAddress << std::dec << std::endl;
+    }
+
     std::signal(SIGINT, handleSignal);
     std::signal(SIGTERM, handleSignal);
     std::cout << "Running. Press Ctrl+C to quit." << std::endl;
 
     // Reports what changed — from MIDI CC, pots, encoders or a preset
-    // switch — to every attached display. The console backend is the
-    // stand-in for the planned LCD, which registers here as a second
-    // ParameterDisplay and needs no other change.
+    // switch — to every attached display: the -v console trace, the LCD,
+    // or both at once.
     rtsynth::ParameterMonitor monitor(*synth);
     rtsynth::ConsoleParameterDisplay console;
     if(cli.verbose.param){
         monitor.addDisplay(&console);
+    }
+    if(cli.lcdAddress >= 0){
+        monitor.addDisplay(&lcdDisplay);
     }
 
     uint64_t lastXruns = 0;
@@ -520,7 +551,8 @@ int main(int argc, char* argv[]){
     bool schedulingReported = false;
     // poll faster when something is being traced so the prints feel
     // immediate; otherwise this loop only watches the error counters
-    const auto pollPeriod = std::chrono::milliseconds(cli.verbose.any()? 50 : 500);
+    const bool watching = cli.verbose.any() || monitor.hasDisplays();
+    const auto pollPeriod = std::chrono::milliseconds(watching? 50 : 500);
     while(g_running.load()){
         std::this_thread::sleep_for(pollPeriod);
 
@@ -629,6 +661,9 @@ int main(int argc, char* argv[]){
     }
 
     std::cout << "\nShutting down." << std::endl;
+    if(cli.lcdAddress >= 0){
+        lcdDisplay.showStatus("rtsynth", "stopped");
+    }
     controlLoop.stop();
     encoders.close();
     host.stop();
