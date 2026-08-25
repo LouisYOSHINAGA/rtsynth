@@ -346,13 +346,18 @@ Program Change ┘                                            │               
 [midi]  cc       ch 0  cc 46  val 100  (nanoKONTROL2 MIDI 1)
 [param] L1 DCW Rate 1 = 0.787 (1063 ms)   <- CC 46 = 100   (line1_dcw_rate1)
 [param] L1 Wave 1st = Pulse               <- CC 89 = 40    (line1_wave1)
-[param] Detune Fine = +35 (+58.3 cent)    <- CC 87 = 100   (detune_fine)
+[param] Detune Fine = +35 (+58.3 ct)      <- CC 87 = 100   (detune_fine)
 [preset] 6: Mono Bass
 ```
 
 値は生の [0,1] ではなく**楽器が解釈した意味で表示**されます（波形名・EG のステップ番号・
 EG レートのミリ秒換算・デチューンのセント数など）。この変換は `Processor::describeValue()`
 が担当するので、LCD 側でも同じ表示が何もせずに得られます。
+
+表示名と値は**どちらも 16 文字以内に収めてあります**（`Reso III Trap`、`+60 (+100.0 ct)` など）。
+LCD は溢れた分を黙って切り捨ててしまうため、全パラメータを全域スイープして
+16 文字を超えないことをセルフテストで検証しています（超えた場合は違反した文字列が
+表示されます）。パラメータや波形を追加するときはこのテストが番人になります。
 
 ## 1.7 PD シンセ
 
@@ -421,7 +426,7 @@ pd 音源は 8 個のファクトリプリセットを持ち、**MIDI Program Ch
 | 1 | Soft Pad | 遅いアタックとリリースのパッド |
 | 2 | E.Piano | 減衰系（サステインなし）、Saw Pulse |
 | 3 | Brass | DCW がやや遅れて立ち上がるブラス |
-| 4 | Reso Sweep | Resonance I 波形＋1.5 秒の DCW スイープ |
+| 4 | Reso Sweep | Reso I Saw 波形＋1.5 秒の DCW スイープ |
 | 5 | Bell | 1+1' デチューンの減衰ベル |
 | 6 | Mono Bass | Mono（SOLO）、2 段 DCW の短いベース |
 | 7 | Dual Detune | 1+2'（Line1 ノコギリ＋Line2 矩形）のデチューン |

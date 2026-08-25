@@ -467,6 +467,73 @@ int main(){
     }
 #endif
 
+    // Everything the hardware synth can be asked to show must fit the 16
+    // columns of its LCD. LcdParameterDisplay truncates silently, so an
+    // overlong name or value does not fail anywhere — it just reaches the
+    // instrument as a cut-off word ("Resonance III Tra"). Sweep every
+    // parameter across its whole range, plus every preset, and measure.
+    {
+        struct WidestDisplay : ParameterDisplay {
+            size_t widest = 0;
+            std::string worst;
+            void note(const std::string& text){
+                if(text.size() > widest){
+                    widest = text.size();
+                    worst = text;
+                }
+            }
+            void showParameter(const DisplayLine& line) override {
+                note(line.label.empty()? line.id : line.label);
+                note(line.value);
+            }
+            void showPreset(int index, const std::string& name) override {
+                note("PRESET " + std::to_string(index));
+                note(name);
+            }
+        };
+
+        // 240 steps resolves every discrete option any parameter has (the
+        // finest is detune fine's 121 positions), so each name the synth
+        // can print for a value is actually visited.
+        auto sweep = [](Processor& processor, WidestDisplay& widest){
+            ParameterMonitor monitor(processor);
+            monitor.addDisplay(&widest);
+            for(auto& parameter : processor.parameters()){
+                for(int step = 0; step <= 240; step++){
+                    parameter->setNormalized(static_cast<float>(step) / 240.0f);
+                    monitor.poll();
+                }
+            }
+            if(PresetBank* bank = processor.presets()){
+                for(int slot = 0; slot < bank->count(); slot++){
+                    bank->select(slot);
+                    monitor.poll();
+                }
+            }
+        };
+
+        WidestDisplay sine;
+        SineSynthProcessor s6;
+        sweep(s6, sine);
+        expect(sine.widest <= 16,
+               "sine: every displayed line fits a 16-column LCD");
+        if(sine.widest > 16){
+            std::printf("       widest was %zu: \"%s\"\n", sine.widest, sine.worst.c_str());
+        }
+
+#ifdef RTSYNTH_HAVE_PD
+        WidestDisplay pd;
+        PdSynthProcessor p2;
+        p2.prepare(kSampleRate, kBlockSize);
+        sweep(p2, pd);
+        expect(pd.widest <= 16,
+               "pd: every displayed line fits a 16-column LCD");
+        if(pd.widest > 16){
+            std::printf("       widest was %zu: \"%s\"\n", pd.widest, pd.worst.c_str());
+        }
+#endif
+    }
+
     // rotary encoder path: relative mapping nudges the parameter and clamps
     {
         struct FakeEncoder : RelativeControlInput {

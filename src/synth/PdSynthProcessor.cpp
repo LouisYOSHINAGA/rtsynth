@@ -40,9 +40,12 @@ constexpr uint8_t kEgCcBlockFirst[3] = {
     102,  // DCA EG: CC 102-118
 };
 
+// Kept to 16 characters, the width of the character LCD the hardware synth
+// shows them on. "Reso" for "Resonance" is what buys the third one its
+// waveform suffix, which is the part that distinguishes it.
 const char* const kWaveformNames[] = {
     "Saw Tooth", "Square", "Pulse", "Double Sine",
-    "Saw Pulse", "Resonance I Saw", "Resonance II Tri", "Resonance III Trap",
+    "Saw Pulse", "Reso I Saw", "Reso II Tri", "Reso III Trap",
 };
 
 const char* const kEgNames[3] = {"DCO", "DCW", "DCA"};
@@ -188,7 +191,10 @@ std::string PdSynthProcessor::paramName(int paramId){
     if(sub < kEgParamSustainPoint){
         return name + " Level " + std::to_string(sub - kEgParamLevel0 + 1);
     }
-    return name + ((sub == kEgParamSustainPoint)? " Sustain Point" : " End Point");
+    // "Sustain Point"/"End Point" would be 20 and 16 characters here — the
+    // ids are ..._sustain and ..._end, so follow those and stay well inside
+    // the LCD's 16. The value ("Step 3") says what kind of point it is.
+    return name + ((sub == kEgParamSustainPoint)? " Sustain" : " End");
 }
 
 // Defaults double as a small init patch: sawtooth on line 1, fast-attack
@@ -475,7 +481,9 @@ std::string PdSynthProcessor::describeValue(const Parameter& parameter) const {
             return text;
         case kParamDetuneFine: {
             const int steps = decodeSignedOption(value, kDetuneFineRange);
-            std::snprintf(text, sizeof(text), "%+d (%+.1f cent)", steps,
+            // "ct" rather than "cent": at the ends of the range the long
+            // form is 17 characters and loses its closing parenthesis
+            std::snprintf(text, sizeof(text), "%+d (%+.1f ct)", steps,
                           steps * kDetuneFineStepCents);
             return text;
         }
