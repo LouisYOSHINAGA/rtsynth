@@ -92,9 +92,14 @@ void printUsage(const char* argv0){
         "  -h, --help           show this help\n";
 }
 
-void listDevices(const std::string& apiName){
+void listDevices(const std::string& apiName, bool verboseWarnings){
     rtsynth::RtAudioOutput audio;
     audio.setApi(apiName);
+    // A device missing from this list failed to open when it was probed,
+    // and the backend's warning is the only place that says why (busy,
+    // no such card, ...) — which is the whole question when the list
+    // comes back short or empty.
+    audio.setVerboseWarnings(verboseWarnings);
     std::cout << "Audio API: " << audio.currentApiName() << std::endl;
     std::cout << "=== Audio Output Devices ===" << std::endl;
     for(const auto& device : audio.listOutputDevices()){
@@ -377,7 +382,7 @@ int main(int argc, char* argv[]){
     cli.host.monitorMidi = cli.verbose.midi || cli.verbose.param
                            || cli.lcdAddress >= 0;
     if(cli.listRequested){
-        listDevices(cli.host.audioApiName);
+        listDevices(cli.host.audioApiName, cli.verbose.warnings);
         return 0;
     }
 

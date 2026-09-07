@@ -273,8 +273,8 @@ void RtAudioOutput::reportDeviceHelp(const std::vector<AudioDeviceDesc>& devices
             "rtsynth with no -d at all. In /etc/asound.conf (or ~/.asoundrc for just\n"
             "this user):\n"
             "\n"
-            "  pcm.!default { type hw  card sndrpihifiberry }\n"
-            "  ctl.!default { type hw  card sndrpihifiberry }\n"
+            "  pcm.!default { type plug  slave.pcm { type hw  card sndrpihifiberry } }\n"
+            "  ctl.!default { type hw    card sndrpihifiberry }\n"
             "\n"
             "\"card\" takes the card *id*: the bracketed name in /proc/asound/cards,\n"
             "which in `aplay -l` is the word after \"card N:\" — NOT the name that\n"
@@ -287,6 +287,21 @@ void RtAudioOutput::reportDeviceHelp(const std::vector<AudioDeviceDesc>& devices
         return;
     }
 #endif
+
+    if(devices.empty()){
+        // Suggesting -d values here would be advice to guess at a list
+        // that is empty: every device the backend knows about refused to
+        // open. Point at what says why instead.
+        std::cerr <<
+            "\nEvery output device refused to open, so none could be listed. Run\n"
+            "  rtsynth --list -v warnings\n"
+            "to see the backend's reason for each one. The usual causes on a\n"
+            "Raspberry Pi are another process holding the card (PipeWire keeps it\n"
+            "open even while idle — check with `sudo fuser -v /dev/snd/*`) and an\n"
+            "ALSA \"default\" that points at a card removed by dtparam=audio=off\n"
+            "(check with `speaker-test -D default -c 2`)." << std::endl;
+        return;
+    }
 
     std::cerr << "\nTry another id with -d, or check that the device is not already"
                  " in use." << std::endl;
