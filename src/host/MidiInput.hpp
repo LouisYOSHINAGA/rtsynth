@@ -40,6 +40,23 @@ public:
     // consumer side (audio thread), lock-free
     virtual bool pop(MidiEvent& out) = 0;
 
+    // --- hot-plug ------------------------------------------------------
+    // A hardware synth is powered on with whatever happens to be attached,
+    // so a missing keyboard at startup is a normal state, not an error:
+    // the backends open what they find, keep running when that is nothing,
+    // and pick up devices as they appear.
+    //
+    // rescan() is the main thread's periodic poll for that. It opens
+    // devices that showed up, releases ones that vanished, and returns
+    // true when the connected set changed so the caller can log it.
+    // Backends must keep pop() safe against it: the audio thread walks the
+    // device slots concurrently, so slots are published atomically and
+    // never destroyed while the stream runs.
+    virtual bool rescan(){ return false; }
+
+    // Whether at least one device is connected right now.
+    virtual bool connected() const = 0;
+
     virtual uint64_t receivedCount() const = 0;
     // producer-side losses (a queue was full); should stay 0 in practice
     virtual uint64_t droppedCount() const = 0;

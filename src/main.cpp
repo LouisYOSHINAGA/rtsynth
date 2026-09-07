@@ -5,6 +5,7 @@
 // from systemd on a hardware synth. This file is the only place that
 // decides *which* Processor is built — swap the instrument here.
 
+#include <algorithm>
 #include <atomic>
 #include <chrono>
 #include <csignal>
@@ -48,8 +49,11 @@ void printUsage(const char* argv0){
         "  -d, --device <id>    audio output device id (default: system default)\n"
         "  -m, --midi <index>   restrict MIDI input to one sequencer port index\n"
         "                       (default: connect to all ports, e.g. keyboard + CC box)\n"
+        "                       devices may be plugged in at any time; they are picked\n"
+        "                       up automatically, so none is needed at startup\n"
         "  --midi-raw <dev>     read MIDI straight from a kernel rawmidi device,\n"
         "                       bypassing the ALSA sequencer; repeatable, or 'all'\n"
+        "                       for every device, including ones plugged in later\n"
         "                       (e.g. --midi-raw hw:1,0,0 — ids shown by --list)\n"
         "  -r, --rate <hz>      sample rate (default: 44100)\n"
         "  -b, --buffer <n>     buffer size in frames (default: 256)\n"
@@ -377,21 +381,6 @@ int main(int argc, char* argv[]){
         return 0;
     }
 
-    // "--midi-raw all" opens every raw device, which also covers devices
-    // that expose several MIDI cables as separate subdevices (a control
-    // surface keyboard typically does)
-    if(cli.host.rawMidiDevices.size() == 1 && cli.host.rawMidiDevices[0] == "all"){
-        cli.host.rawMidiDevices.clear();
-        for(const auto& [id, name] : rtsynth::RawMidiInput::listInputs()){
-            std::cout << "Raw MIDI device: " << id << "  " << name << std::endl;
-            cli.host.rawMidiDevices.push_back(id);
-        }
-        if(cli.host.rawMidiDevices.empty()){
-            std::cerr << "No raw MIDI device found." << std::endl;
-            return 1;
-        }
-    }
-
     std::unique_ptr<rtsynth::Processor> synth = createSynth(cli.synthName);
     if(synth == nullptr){
         return 1;
@@ -553,8 +542,22 @@ int main(int argc, char* argv[]){
     // immediate; otherwise this loop only watches the error counters
     const bool watching = cli.verbose.any() || monitor.hasDisplays();
     const auto pollPeriod = std::chrono::milliseconds(watching? 50 : 500);
+    // Hot-plug poll: the synth may have been powered on with no keyboard
+    // attached, and a USB cable can be pulled at any point. Once a second
+    // is responsive enough to feel immediate and costs nothing measurable.
+    const int midiRescanEvery = std::max<int>(1, 1000 / static_cast<int>(pollPeriod.count()));
+    int midiRescanTicks = 0;
     while(g_running.load()){
         std::this_thread::sleep_for(pollPeriod);
+
+        // connect devices that appeared, release ones that went away
+        // (which also releases the notes they were holding)
+        if(++midiRescanTicks >= midiRescanEvery){
+            midiRescanTicks = 0;
+            if(host.rescanMidi()){
+                std::cout << "MIDI input: " << host.midi().description() << std::endl;
+            }
+        }
 
         // report once whether the audio thread really got realtime
         // scheduling — silently missing rtprio permission is the most

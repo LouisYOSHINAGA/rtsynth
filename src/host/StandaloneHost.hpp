@@ -42,7 +42,6 @@ public:
         unsigned int sampleRate = 44100;
         unsigned int bufferFrames = 256;
         unsigned int channels = 2;
-        bool requireMidi = true;
         // debug: let the audio backend report devices it could not probe
         bool verboseWarnings = false;
         // debug: mirror received MIDI into the monitor queues, which the
@@ -59,6 +58,11 @@ public:
 
     RtAudioOutput& audio(){ return audio_; }
     MidiInput& midi(){ return *activeMidi_; }
+
+    // Main-thread poll for devices plugged in (or unplugged) since the
+    // last call. Returns true when the connected set changed, so the
+    // caller can report the new midi().description().
+    bool rescanMidi(){ return activeMidi_->rescan(); }
 
     // times a block's MidiBuffer filled up and the remaining events were
     // deferred to the next block (nothing is lost; high values mean the

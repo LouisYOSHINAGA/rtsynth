@@ -6,26 +6,20 @@ namespace rtsynth {
 bool StandaloneHost::start(const Options& options){
     audio_.setVerboseWarnings(options.verboseWarnings);
 
-    // pick the MIDI backend: raw kernel devices when requested, otherwise
-    // the ALSA sequencer via RtMidi
-    bool midiOpen;
+    // Pick the MIDI backend: raw kernel devices when requested, otherwise
+    // the ALSA sequencer via RtMidi. Opening nothing is reported, never
+    // fatal — a hardware synth is powered on with whatever happens to be
+    // plugged in, and the keyboard may only be connected afterwards. The
+    // backend keeps scanning and connects when one appears (rescanMidi).
     if(!options.rawMidiDevices.empty()){
         activeMidi_ = &rawMidi_;
-        midiOpen = rawMidi_.open(options.rawMidiDevices);
+        rawMidi_.open(options.rawMidiDevices);
     }else{
         activeMidi_ = &seqMidi_;
-        midiOpen = seqMidi_.open(options.midiPortIndex);
+        seqMidi_.open(options.midiPortIndex);
     }
     activeMidi_->setMonitorEnabled(options.monitorMidi);
-
-    if(!midiOpen){
-        if(options.requireMidi){
-            return false;
-        }
-        std::cerr << "Continuing without MIDI input." << std::endl;
-    }else{
-        std::cout << "MIDI input: " << activeMidi_->description() << std::endl;
-    }
+    std::cout << "MIDI input: " << activeMidi_->description() << std::endl;
 
     const bool opened = audio_.open(
         options.audioDeviceId, options.sampleRate, options.bufferFrames,

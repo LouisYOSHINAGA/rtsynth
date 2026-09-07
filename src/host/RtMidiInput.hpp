@@ -16,26 +16,46 @@ namespace rtsynth {
 // from a keyboard and CC from a separate controller can arrive in
 // parallel; pass an explicit port index to restrict input to one device.
 //
+// Hot-plug: open() succeeds even when nothing is attached, and rescan()
+// (main thread, ~1 Hz) connects devices as they appear and releases them
+// when they vanish. A synth that boots with the keyboard still unplugged
+// is the normal case on a Raspberry Pi.
+//
 // Threading: RtMidi runs one callback thread per opened port, and the
 // SPSC ring buffer allows only a single producer — so each port gets its
 // own queue (that port's callback thread is the sole producer, the audio
-// thread the sole consumer). pop() drains all of them. Nothing here
-// blocks or allocates after open().
+// thread the sole consumer). pop() drains all of them.
+//
+// Because the audio thread walks those slots while the main thread may be
+// connecting or disconnecting devices, the slot array is fixed-size and
+// slots are never destroyed once published: connecting fills a slot and
+// then publishes it with a release store, disconnecting only tears down
+// the RtMidi connection and leaves the (now idle) queue in place. Nothing
+// here blocks or allocates on the audio thread.
 class RtMidiInput : public MidiInput {
 public:
+    // Ports a Raspberry Pi synth can plausibly have attached at once;
+    // beyond this, further devices are ignored with a warning.
+    static constexpr size_t kMaxPorts = 16;
+
     std::vector<std::string> listPorts();
 
     // portIndex >= 0 opens exactly that port; portIndex < 0 opens all
-    // ports except "Midi Through". Returns false when nothing was opened.
+    // ports except "Midi Through". Returns false when nothing was opened,
+    // which is not fatal: rescan() keeps trying.
     bool open(int portIndex);
     void close() override;
 
-    size_t numOpenPorts() const { return ports_.size(); }
+    bool rescan() override { return scan(false); }
+    bool connected() const override { return connectedPorts() > 0; }
+
+    size_t numOpenPorts() const { return connectedPorts(); }
     std::string description() const override;
 
     bool pop(MidiEvent& out) override {
-        for(auto& port : ports_){
-            if(port->queue.pop(out)){
+        const size_t count = portCount_.load(std::memory_order_acquire);
+        for(size_t i = 0; i < count; i++){
+            if(ports_[i]->queue.pop(out)){
                 return true;
             }
         }
@@ -57,19 +77,21 @@ public:
     // The sequencer hands us whole decoded messages, so each message —
     // not each device read — opens a group here.
     void drainRawDump(const RawByteFn& fn) override {
-        for(auto& port : ports_){
+        const size_t count = portCount_.load(std::memory_order_acquire);
+        for(size_t i = 0; i < count; i++){
             RawMidiByte entry;
-            while(port->rawQueue.pop(entry)){
+            while(ports_[i]->rawQueue.pop(entry)){
                 fn(entry.value, entry.startsGroup);
             }
         }
     }
 
     void drainMonitor(const MonitorFn& fn) override {
-        for(auto& port : ports_){
+        const size_t count = portCount_.load(std::memory_order_acquire);
+        for(size_t i = 0; i < count; i++){
             MidiEvent event;
-            while(port->monitorQueue.pop(event)){
-                fn(port->name, event);
+            while(ports_[i]->monitorQueue.pop(event)){
+                fn(ports_[i]->name, event);
             }
         }
     }
@@ -77,7 +99,7 @@ public:
 private:
     struct Port {
         RtMidiInput* owner = nullptr;
-        std::unique_ptr<RtMidiIn> midi;
+        std::unique_ptr<RtMidiIn> midi;   // null while disconnected
         // generous size: this queue must absorb the backlog that builds up
         // whenever the audio callback stalls (xrun recovery, CPU spikes) —
         // losing a note-off here means a note hangs forever
@@ -85,6 +107,9 @@ private:
         SpscRingBuffer<MidiEvent, 256> monitorQueue;  // consumer: main thread
         SpscRingBuffer<RawMidiByte, 8192> rawQueue;   // consumer: main thread
         std::string name;
+        // read by the main thread only; the audio thread drains a
+        // disconnected port's queue harmlessly (it has no producer left)
+        bool connected = false;
     };
 
     static void rtCallback(double timestamp, std::vector<uint8_t>* message, void* userData);
@@ -92,17 +117,31 @@ private:
     // creating RtMidiIn can throw (e.g. no ALSA sequencer on headless
     // systems), so construct instances lazily and report failure cleanly
     bool ensureProbe();
-    bool openOne(unsigned int index, const std::string& name);
+    // The one scan routine behind both open() and rescan(); `initial`
+    // only decides whether failures are worth printing, since a rescan
+    // runs once a second and must not turn into a log flood.
+    bool scan(bool initial);
+    bool connectPort(unsigned int index, const std::string& name, bool initial);
+    void disconnectPort(Port& port);
+    size_t connectedPorts() const;
 
     // instance used only for enumerating ports; each opened port gets its
     // own RtMidiIn (RtMidi binds one connection per instance)
     std::unique_ptr<RtMidiIn> probe_;
-    // every port the sequencer offered, so description() can show what was
-    // available versus what was actually connected — a device whose notes
-    // travel on a second port (many keyboards expose a separate control
-    // port) is otherwise silently invisible
+    // every port the sequencer offered at the last scan, so description()
+    // can show what was available versus what was actually connected — a
+    // device whose notes travel on a second port (many keyboards expose a
+    // separate control port) is otherwise silently invisible
     std::vector<std::string> discovered_;
-    std::vector<std::unique_ptr<Port>> ports_;
+    // Slots are append-only and never freed while running: the audio
+    // thread reads ports_[0, portCount_) without synchronization beyond
+    // this counter.
+    std::unique_ptr<Port> ports_[kMaxPorts];
+    std::atomic<size_t> portCount_{0};
+    int portIndex_ = -1;          // -1 = every port (the default)
+    std::string wantedName_;      // single-port mode: the port once resolved
+    bool slotsExhausted_ = false; // warn about kMaxPorts only once
+    bool probeErrorReported_ = false;  // rescan runs at 1 Hz; say it once
     std::atomic<uint64_t> received_{0};
     std::atomic<uint64_t> dropped_{0};
     std::atomic<uint64_t> undecoded_{0};

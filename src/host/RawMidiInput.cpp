@@ -1,6 +1,7 @@
 #include <errno.h>
 #include <poll.h>
 
+#include <algorithm>
 #include <cstdio>
 #include <iostream>
 
@@ -50,61 +51,186 @@ std::vector<std::pair<std::string, std::string>> RawMidiInput::listInputs(){
     return inputs;
 }
 
-bool RawMidiInput::open(const std::vector<std::string>& deviceIds){
-    for(const std::string& id : deviceIds){
-        auto device = std::make_unique<Device>();
-        device->owner = this;
-        device->id = id;
-        device->name = id;
-
-        const int err = snd_rawmidi_open(&device->in, nullptr, id.c_str(),
-                                         SND_RAWMIDI_NONBLOCK);
-        if(err < 0){
-            std::cerr << "Failed to open raw MIDI device " << id << ": "
-                      << snd_strerror(err) << " (see --list for device ids)" << std::endl;
-            continue;  // one bad device shouldn't stop the rest
+size_t RawMidiInput::connectedDevices() const {
+    size_t connected = 0;
+    const size_t slots = deviceCount_.load(std::memory_order_relaxed);
+    for(size_t i = 0; i < slots; i++){
+        if(devices_[i]->connected){
+            connected++;
         }
-        devices_.push_back(std::move(device));
+    }
+    return connected;
+}
+
+bool RawMidiInput::connectDevice(const std::string& id, const std::string& name, bool initial){
+    const size_t slots = deviceCount_.load(std::memory_order_relaxed);
+    Device* device = nullptr;
+    for(size_t i = 0; i < slots && device == nullptr; i++){
+        if(!devices_[i]->connected && devices_[i]->id == id){
+            device = devices_[i].get();  // same device back again
+        }
+    }
+    for(size_t i = 0; i < slots && device == nullptr; i++){
+        if(!devices_[i]->connected){
+            device = devices_[i].get();
+        }
     }
 
-    if(devices_.empty()){
-        std::cerr << "No raw MIDI device could be opened." << std::endl;
+    const bool freshSlot = (device == nullptr);
+    std::unique_ptr<Device> created;
+    if(freshSlot){
+        if(slots >= kMaxDevices){
+            if(!slotsExhausted_){
+                slotsExhausted_ = true;
+                std::cerr << "[warning] more than " << kMaxDevices
+                          << " raw MIDI devices; ignoring " << id << std::endl;
+            }
+            return false;
+        }
+        created = std::make_unique<Device>();
+        device = created.get();
+    }
+
+    const int err = snd_rawmidi_open(&device->in, nullptr, id.c_str(),
+                                     SND_RAWMIDI_NONBLOCK);
+    if(err < 0){
+        device->in = nullptr;
+        // a rescan runs once a second, so only the startup attempt speaks
+        if(initial){
+            std::cerr << "Failed to open raw MIDI device " << id << ": "
+                      << snd_strerror(err) << " (see --list for device ids)" << std::endl;
+        }
         return false;
     }
 
-    running_.store(true);
-    for(auto& device : devices_){
-        // capture the heap object by pointer — capturing the loop variable
-        // by reference would dangle once the loop advances/exits
-        Device* raw = device.get();
-        device->thread = std::thread([this, raw]{ readerThread(*raw); });
+    device->owner = this;
+    device->id = id;
+    device->name = name.empty()? id : name;
+    device->parser.reset();       // a reconnect starts a fresh byte stream
+    device->gone.store(false, std::memory_order_relaxed);
+    device->connected = true;
+
+    if(freshSlot){
+        // publish only once the slot is fully built: the audio thread
+        // reads devices_[0, deviceCount_) with no other synchronization
+        devices_[slots] = std::move(created);
+        deviceCount_.store(slots + 1, std::memory_order_release);
     }
+
+    // capture the heap object by pointer — capturing a local by reference
+    // would dangle as soon as this function returns
+    Device* raw = device;
+    device->thread = std::thread([this, raw]{ readerThread(*raw); });
     return true;
+}
+
+void RawMidiInput::reapDevice(Device& device){
+    if(device.thread.joinable()){
+        device.thread.join();
+    }
+    if(device.in != nullptr){
+        snd_rawmidi_close(device.in);
+        device.in = nullptr;
+    }
+    device.connected = false;
+
+    // The reader thread is joined, so the main thread is now this queue's
+    // only producer. An unplugged keyboard cannot send the note-offs for
+    // whatever it was holding, so release them here.
+    for(uint8_t channel = 0; channel < 16; channel++){
+        device.queue.push(MidiEvent::controlChange(channel, 123, 0));  // all notes off
+    }
+}
+
+bool RawMidiInput::scan(bool initial){
+    bool changed = false;
+    const size_t slots = deviceCount_.load(std::memory_order_relaxed);
+
+    // 1. reap readers whose device disappeared
+    for(size_t i = 0; i < slots; i++){
+        Device& device = *devices_[i];
+        if(device.connected && device.gone.load(std::memory_order_relaxed)){
+            reapDevice(device);
+            changed = true;
+        }
+    }
+
+    const auto inputs = listInputs();
+    auto alreadyConnected = [this, slots](const std::string& id){
+        for(size_t i = 0; i < slots; i++){
+            if(devices_[i]->connected && devices_[i]->id == id){
+                return true;
+            }
+        }
+        return false;
+    };
+
+    // 2. open what is present and not yet connected
+    for(const auto& [id, name] : inputs){
+        const bool wanted = wantAll_
+                         || std::find(requested_.begin(), requested_.end(), id)
+                            != requested_.end();
+        if(!wanted || alreadyConnected(id)){
+            continue;
+        }
+        if(connectDevice(id, name, initial)){
+            changed = true;
+        }
+    }
+    return changed;
+}
+
+bool RawMidiInput::open(const std::vector<std::string>& deviceIds){
+    requested_ = deviceIds;
+    wantAll_ = std::find(requested_.begin(), requested_.end(), "all") != requested_.end();
+    running_.store(true);
+    scan(true);
+    // Nothing connected is not an error: rescan() picks devices up as
+    // they are plugged in.
+    return connectedDevices() > 0;
 }
 
 void RawMidiInput::close(){
     running_.store(false);
-    for(auto& device : devices_){
-        if(device->thread.joinable()){
-            device->thread.join();
+    // called with the audio stream already stopped, so the slots may go
+    const size_t slots = deviceCount_.load(std::memory_order_relaxed);
+    deviceCount_.store(0, std::memory_order_release);
+    for(size_t i = 0; i < slots; i++){
+        Device& device = *devices_[i];
+        if(device.thread.joinable()){
+            device.thread.join();
         }
-        if(device->in != nullptr){
-            snd_rawmidi_close(device->in);
-            device->in = nullptr;
+        if(device.in != nullptr){
+            snd_rawmidi_close(device.in);
+            device.in = nullptr;
         }
+        device.connected = false;
+        devices_[i].reset();
     }
-    devices_.clear();
+    requested_.clear();
+    wantAll_ = false;
+    slotsExhausted_ = false;
 }
 
 std::string RawMidiInput::description() const {
+    const size_t slots = deviceCount_.load(std::memory_order_relaxed);
+    const size_t connected = connectedDevices();
+    if(connected == 0){
+        return "raw MIDI (kernel rawmidi), no device connected yet"
+               " — will connect automatically when one appears";
+    }
+
     std::string text = "raw MIDI (kernel rawmidi), "
-                     + std::to_string(devices_.size()) + " device(s): ";
+                     + std::to_string(connected) + " device(s): ";
     bool first = true;
-    for(const auto& device : devices_){
+    for(size_t i = 0; i < slots; i++){
+        if(!devices_[i]->connected){
+            continue;
+        }
         if(!first){
             text += ", ";
         }
-        text += device->id;
+        text += devices_[i]->id;
         first = false;
     }
     return text;
@@ -124,10 +250,30 @@ void RawMidiInput::readerThread(Device& device){
         }
     };
 
-    while(running_.load()){
+    while(running_.load() && !device.gone.load(std::memory_order_relaxed)){
         const int ready = ::poll(fds, static_cast<nfds_t>(nfds), 200 /* ms */);
-        if(ready <= 0){
-            continue;  // timeout (re-checks running_) or transient error
+        if(ready < 0){
+            if(errno == EINTR){
+                continue;
+            }
+            device.gone.store(true, std::memory_order_relaxed);
+            break;
+        }
+        if(ready == 0){
+            continue;  // timeout: re-checks running_ / gone
+        }
+
+        // An unplugged device shows up here as an error/hangup rather than
+        // as readable data. Hand the slot back to scan() instead of
+        // spinning on a descriptor that will never be readable again.
+        unsigned short revents = 0;
+        if(snd_rawmidi_poll_descriptors_revents(device.in, fds, nfds, &revents) < 0
+           || (revents & (POLLERR | POLLHUP | POLLNVAL)) != 0){
+            device.gone.store(true, std::memory_order_relaxed);
+            break;
+        }
+        if((revents & POLLIN) == 0){
+            continue;
         }
 
         uint8_t buffer[512];
@@ -139,6 +285,9 @@ void RawMidiInput::readerThread(Device& device){
                 }
             }
             device.parser.feed(buffer, static_cast<size_t>(bytes), emit);
+        }else if(bytes == -ENODEV || bytes == -ENXIO){
+            device.gone.store(true, std::memory_order_relaxed);  // unplugged
+            break;
         }else if(bytes < 0 && bytes != -EAGAIN && bytes != -EINTR){
             // -EPIPE means the kernel's rawmidi input buffer overran and
             // bytes were discarded by the driver: exactly the kind of
