@@ -296,10 +296,15 @@ void RtAudioOutput::reportDeviceHelp(const std::vector<AudioDeviceDesc>& devices
             "\nEvery output device refused to open, so none could be listed. Run\n"
             "  rtsynth --list -v warnings\n"
             "to see the backend's reason for each one. The usual causes on a\n"
-            "Raspberry Pi are another process holding the card (PipeWire keeps it\n"
-            "open even while idle — check with `sudo fuser -v /dev/snd/*`) and an\n"
+            "Raspberry Pi are another process holding the card and an\n"
             "ALSA \"default\" that points at a card removed by dtparam=audio=off\n"
-            "(check with `speaker-test -D default -c 2`)." << std::endl;
+            "(check with `speaker-test -D default -c 2`).\n"
+            "\n"
+            "`sudo fuser -v /dev/snd/*` names the holder. Two of them are easy to\n"
+            "miss: PipeWire keeps a card open even while idle, and an rtsynth\n"
+            "started at boot by systemd holds it for as long as it runs — ALSA\n"
+            "hardware devices are exclusive, so a second copy can never share it."
+            << std::endl;
         return;
     }
 
