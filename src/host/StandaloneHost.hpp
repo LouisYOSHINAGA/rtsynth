@@ -6,6 +6,7 @@
 #include <vector>
 
 #include "../core/Processor.hpp"
+#include "../dsp/SmoothedValue.hpp"
 #include "../core/SpscRingBuffer.hpp"
 #include "MidiInput.hpp"
 #include "RawMidiInput.hpp"
@@ -52,6 +53,11 @@ public:
         unsigned int sampleRate = 44100;
         unsigned int bufferFrames = 256;
         unsigned int channels = 2;
+        // Output attenuation applied *after* the instrument, so it is not
+        // part of the sound: an instrument's own gain/volume parameter
+        // belongs to the preset and is reloaded with it, which makes it
+        // the wrong place to set how loud the box is.
+        float masterGain = 1.0f;
         // debug: let the audio backend report devices it could not probe
         bool verboseWarnings = false;
         // debug: mirror received MIDI into the monitor queues, which the
@@ -89,6 +95,13 @@ public:
     // out, applied at the start of the next block.
     bool sendCommand(HostCommand command){ return commands_.push(command); }
 
+    // Runtime master volume, safe from any thread. Ramped in the audio
+    // callback rather than applied as a step, so moving it does not click.
+    void setMasterGain(float gain){
+        masterGainTarget_.store(gain, std::memory_order_relaxed);
+    }
+    float masterGain() const { return masterGainTarget_.load(std::memory_order_relaxed); }
+
     // times a block's MidiBuffer filled up and the remaining events were
     // deferred to the next block (nothing is lost; high values mean the
     // audio callback is stalling or a controller is flooding CCs)
@@ -103,6 +116,8 @@ private:
     MidiBuffer midiBuffer_;
     SpscRingBuffer<MidiEvent, 64> controlEvents_;
     SpscRingBuffer<HostCommand, 16> commands_;
+    std::atomic<float> masterGainTarget_{1.0f};
+    SmoothedValue masterGainRamp_;  // audio thread only
     std::atomic<uint64_t> midiOverflow_{0};
 };
 

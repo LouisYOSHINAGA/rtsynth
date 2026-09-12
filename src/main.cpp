@@ -58,7 +58,10 @@ void printUsage(const char* argv0){
         "                       (e.g. --midi-raw hw:1,0,0 — ids shown by --list)\n"
         "  -r, --rate <hz>      sample rate (default: 44100)\n"
         "  -b, --buffer <n>     buffer size in frames (default: 256)\n"
-        "  -g, --gain <0..1>    master gain (default: 0.2)\n"
+        "  -g, --gain <0..1>    master output volume, applied after the instrument\n"
+        "                       and outside the presets (default: 1.0 = unchanged).\n"
+        "                       The instrument's own gain/volume parameter is part\n"
+        "                       of the preset: set that with --param instead\n"
         "  -p, --param <id=v>   set a synth parameter, repeatable\n"
         "                       (e.g. --param attack=0.001 --param release=0.1)\n"
         "  --preset <n>         start on preset n (= its Program Change number);\n"
@@ -458,15 +461,14 @@ int main(int argc, char* argv[]){
         std::cout << "Polyphony capped at " << cli.maxVoices << " voices" << std::endl;
     }
 
-    // -g targets the master output whatever the instrument calls it
+    // -g is the box's volume knob, not the patch's: it scales the finished
+    // output in the host, so switching preset (or reverting one) cannot
+    // undo it the way writing the instrument's own gain parameter would.
     if(cli.gain >= 0.0f){
-        rtsynth::Parameter* master = synth->parameters().byId("gain");
-        if(master == nullptr){
-            master = synth->parameters().byId("volume");
-        }
-        if(master != nullptr){
-            master->set(cli.gain);
-        }
+        // clamped because this now multiplies the finished output: above
+        // unity it would clip the DAC rather than the instrument's own
+        // limiter, which is not a useful thing to allow by typo
+        cli.host.masterGain = std::min(cli.gain, 1.0f);
     }
 
     auto findParameter = [&synth](const std::string& id) -> rtsynth::Parameter* {

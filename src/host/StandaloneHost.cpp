@@ -6,6 +6,11 @@ namespace rtsynth {
 bool StandaloneHost::start(const Options& options){
     audio_.setVerboseWarnings(options.verboseWarnings);
 
+    // ready before the stream can call back
+    masterGainTarget_.store(options.masterGain, std::memory_order_relaxed);
+    masterGainRamp_.prepare(static_cast<double>(options.sampleRate), 0.01f);
+    masterGainRamp_.snap(options.masterGain);
+
     // Pick the MIDI backend: raw kernel devices when requested, otherwise
     // the ALSA sequencer via RtMidi. Opening nothing is reported, never
     // fatal — a hardware synth is powered on with whatever happens to be
@@ -57,6 +62,19 @@ bool StandaloneHost::start(const Options& options){
             }
 
             processor_.process(output, midiBuffer_);
+
+            // Master volume last, after everything the instrument did.
+            // Skipped entirely at unity so the common case costs nothing.
+            const float gain = masterGainTarget_.load(std::memory_order_relaxed);
+            masterGainRamp_.setTarget(gain);
+            if(gain != 1.0f || masterGainRamp_.current() != 1.0f){
+                for(int frame = 0; frame < output.numFrames(); frame++){
+                    const float step = masterGainRamp_.tick();
+                    for(int channel = 0; channel < output.numChannels(); channel++){
+                        output.channel(channel)[frame] *= step;
+                    }
+                }
+            }
         });
 
     if(!opened){
