@@ -399,9 +399,11 @@ After=sound.target
 ExecStart=/home/pi/rtsynth/build/rtsynth --synth pd \
   --adc 0=volume --adc 1=line1_dcw_level1 \
   --enc 17,27=line1_dca_rate1 \
+  --button 5=preset-prev --button 6=preset-next --button 13=revert \
   --lcd 0x27
 Restart=on-failure
 User=pi
+SupplementaryGroups=audio gpio i2c spi
 LimitRTPRIO=95
 
 [Install]

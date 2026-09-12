@@ -185,6 +185,11 @@ speaker-test -D default -c 2      # ★ここで鳴ってから次へ
 起動条件ではない（[1.4](#14-midi-入力) の活線挿抜）ので、USB の認識を待つための
 `After=` や `sleep` は不要です。
 
+ハードウェア（`--adc` / `--enc` / `--button` / `--lcd`）を使う場合は、**開けなかった
+時点で起動失敗になります**。`Restart=on-failure` と組み合わせると設定ミスが
+再起動ループになるので、**必ず一度手で起動して成功を確認してから** unit に登録して
+ください（デバイスへのアクセス権は `SupplementaryGroups=` で渡します）。
+
 ```ini
 # /etc/systemd/system/rtsynth.service
 [Unit]
@@ -192,9 +197,11 @@ Description=rtsynth
 After=sound.target
 
 [Service]
-ExecStart=/home/pi/rtsynth/build/rtsynth --adc 0=gain
+ExecStart=/home/pi/rtsynth/build/rtsynth --synth pd \
+  --button 5=preset-prev --button 6=preset-next --button 13=revert
 Restart=on-failure
 User=pi
+SupplementaryGroups=audio gpio
 LimitRTPRIO=95
 
 [Install]
