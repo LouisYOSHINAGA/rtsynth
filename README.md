@@ -227,7 +227,7 @@ WantedBy=multi-user.target
 | `--list-presets` | プリセット一覧を表示して終了 |
 | `--voices <n>` | ポリフォニー上限 |
 | `--adc`, `--enc` | 物理コントロールの割当（[1.6](#16-物理コントロールツマミエンコーダ)） |
-| `--button <pin>=<動作>` | パネルボタンの割当（`preset-next` / `preset-prev` / `panic`） |
+| `--button <pin>=<動作>` | パネルボタンの割当（`preset-next` / `preset-prev` / `revert` / `panic`） |
 | `--lcd <addr>` | 16x2 I2C LCD にパラメータを表示（例 `--lcd 0x27`、[1.6](#表示lcd--oledと--v-のパラメータ表示)） |
 | `--lcd-bus <path>` | LCD の I2C バス（既定 `/dev/i2c-1`） |
 | `-v, --verbose [種類]` | 動作トレース。引数なしで全部、カンマ区切りで種類を指定（[2.7](#診断オプション)） |
@@ -321,7 +321,7 @@ MIDI CC と取り合いになっても値が飛びません。
 
 ```sh
 ./build/rtsynth --synth pd --button 5=preset-prev --button 6=preset-next
-./build/rtsynth --synth pd --button 5=preset-prev --button 6=preset-next --button 13=panic
+./build/rtsynth --synth pd --button 5=preset-prev --button 6=preset-next --button 13=revert
 ./build/rtsynth --button-chip /dev/gpiochip4 ...    # Pi 5 等でチップ番号が違う場合
 ```
 
@@ -329,6 +329,7 @@ MIDI CC と取り合いになっても値が飛びません。
 |---|---|
 | `preset-next` | 次のプリセットへ。最後まで行くと**先頭へ回り込みます** |
 | `preset-prev` | 前のプリセットへ。先頭で押すと**末尾へ回り込みます** |
+| `revert` | 今のプリセットへの**編集を全部捨てて、起動時の音に戻します**（下記） |
 | `panic` | 全チャンネル即時消音（CC120 相当） |
 
 チャタリング除去は**カーネル側**が行うので（GPIO chardev v2 の
@@ -508,6 +509,13 @@ Program Change 番号が動かないようにするためです。
   つまり戻ってくれば編集後の音が復元されます
 - 編集内容は RAM 上のみで、**再起動するとファクトリの状態に戻ります**（保存は未実装）。
   ユーザスロットも例外ではありません
+- **`revert` ボタン**（[1.6](#16-物理コントロールツマミエンコーダ)）は、今のスロットを
+  **音源が起動時に構築した値**へ戻します。「スロットを選び直す」では戻りません
+  — 上記のとおり離脱時に編集内容が保存されるので、一度出て戻った時点でスロットの中身
+  自体が編集後の音になっているためです。戻せるのは**今いるスロットだけ**で、
+  他のスロットの編集はそのまま残ります
+  （`--param` による起動時の上書きは「起動時の値」には含まれません。
+  プリセットは音源の構築時点で確定するためです）
 - 存在しない番号の Program Change は無視されます
 
 `-v` で実行中にプリセットを切り替えると `[preset] 6: Mono Bass` の 1 行だけが出ます

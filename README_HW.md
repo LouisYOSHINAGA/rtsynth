@@ -305,7 +305,7 @@ GND を共用でき配線が短く済みます。
 |---|---|---|---|
 | プリセット ← | GPIO5 | 29 | 30 |
 | プリセット → | GPIO6 | 31 | 30 |
-| 予備（panic 等） | GPIO13 | 33 | 34 |
+| revert（編集を戻す） | GPIO13 | 33 | 34 |
 | 電源断（shutdown） | GPIO26 | 37 | 39 |
 
 いずれも SPI(7–11) / I2C(2,3) / I2S(18–21) / UART(14,15) と重なりません。
@@ -314,11 +314,13 @@ GND を共用でき配線が短く済みます。
 
 ```sh
 ./build/rtsynth --synth pd --lcd 0x27 \
-  --button 5=preset-prev --button 6=preset-next --button 13=panic
+  --button 5=preset-prev --button 6=preset-next --button 13=revert
 ```
 
 `preset-next` / `preset-prev` は端まで行くと反対の端へ回り込みます。押すと LCD の表示が
-切り替わります。`panic` は全音を即時停止します（CC120 相当）。
+切り替わります。`revert` は今のプリセットへの編集を全部捨てて**起動時の音**に戻します
+（LCD にはプリセット名が再表示されます）。`panic`（全音即時停止・CC120 相当）も
+同じように割り当てられます。
 
 ### ⚠ shutdown ボタンのピンは GPIO3 から移すこと
 
@@ -439,7 +441,7 @@ journalctl -u rtsynth -f      # ログ確認
   --adc 0=volume --adc 1=line1_dcw_level1 --adc 2=detune_fine \
   --enc 17,27=line1_dca_rate1 --enc 22,23=line1_dca_rate2 \
   --lcd 0x27 \
-  --button 5=preset-prev --button 6=preset-next --button 13=panic \
+  --button 5=preset-prev --button 6=preset-next --button 13=revert \
   -v
 ```
 

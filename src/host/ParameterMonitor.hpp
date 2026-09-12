@@ -33,6 +33,7 @@ public:
         : processor_(processor), watcher_(processor.parameters()){
         if(const PresetBank* bank = processor_.presets()){
             lastPreset_ = bank->current();
+            lastRevision_ = bank->revision();
         }
     }
 
@@ -69,8 +70,12 @@ public:
             return;
         }
 
+        // Watch the revision, not the slot number: a revert reloads the
+        // slot it is already on, so the number does not move even though
+        // every value did.
         PresetBank* bank = processor_.presets();
-        if(bank != nullptr && bank->current() != lastPreset_){
+        if(bank != nullptr && bank->revision() != lastRevision_){
+            lastRevision_ = bank->revision();
             lastPreset_ = bank->current();
             watcher_.resync();  // the whole snapshot changed; report the preset
             pending_.clear();
@@ -130,6 +135,7 @@ private:
     std::vector<ParameterDisplay*> displays_;
     std::vector<std::pair<Parameter*, std::string>> pending_;
     int lastPreset_ = 0;
+    uint32_t lastRevision_ = 0;
 };
 
 }  // namespace rtsynth

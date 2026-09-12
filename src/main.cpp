@@ -72,7 +72,8 @@ void printUsage(const char* argv0){
         "  --enc-chip <path>    GPIO chip of the encoders (default: /dev/gpiochip0)\n"
         "  --enc-step <size>    normalized change per encoder detent (default: 0.01)\n"
         "  --button <pin>=<act> map a panel button on a GPIO pin to an action,\n"
-        "                       repeatable. Actions: preset-next, preset-prev, panic\n"
+        "                       repeatable. Actions: preset-next, preset-prev,\n"
+        "                       revert (undo this preset's edits), panic\n"
         "                       (e.g. --button 5=preset-prev --button 6=preset-next)\n"
         "  --button-chip <path> GPIO chip of the buttons (default: /dev/gpiochip0)\n"
         "  --lcd <addr>         show the last-changed parameter on a 16x2 I2C LCD\n"
@@ -224,7 +225,8 @@ struct ButtonMapping {
     std::string action;
 };
 
-constexpr const char* kButtonActions = "preset-next, preset-prev, panic";
+constexpr const char* kButtonActions =
+    "preset-next, preset-prev, revert, panic";
 
 struct CliOptions {
     rtsynth::StandaloneHost::Options host;
@@ -326,7 +328,7 @@ bool parseArguments(int argc, char* argv[], CliOptions& cli, bool& exitRequested
                     std::string pin, action;
                     if(!splitAssignment(v, "--button", pin, action)) return false;
                     if(action != "preset-next" && action != "preset-prev"
-                       && action != "panic"){
+                       && action != "revert" && action != "panic"){
                         std::cerr << "--button action '" << action
                                   << "' is unknown. Available: " << kButtonActions
                                   << std::endl;
@@ -544,7 +546,7 @@ int main(int argc, char* argv[]){
     if(!cli.buttonMappings.empty()){
         const bool havePresets = (presets != nullptr && !presets->empty());
         for(const ButtonMapping& mapping : cli.buttonMappings){
-            if(!havePresets && mapping.action.rfind("preset-", 0) == 0){
+            if(!havePresets && mapping.action != "panic"){
                 std::cerr << "--button " << mapping.pin << "=" << mapping.action
                           << " needs an instrument with presets; " << synth->name()
                           << " has none." << std::endl;
@@ -566,6 +568,10 @@ int main(int argc, char* argv[]){
                     // CC120 All Sound Off, the same message a panic button
                     // on a MIDI controller sends
                     host.sendControlEvent(rtsynth::MidiEvent::controlChange(0, 120, 0));
+                    return;
+                }
+                if(action == "revert"){
+                    host.sendCommand(rtsynth::HostCommand::RevertPreset);
                     return;
                 }
                 const int delta = (action == "preset-next")? +1 : -1;

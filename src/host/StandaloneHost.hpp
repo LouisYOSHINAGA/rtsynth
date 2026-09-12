@@ -1,6 +1,7 @@
 #pragma once
 
 #include <atomic>
+#include <cstdint>
 #include <string>
 #include <vector>
 
@@ -31,6 +32,14 @@ namespace rtsynth {
 // Swapping RtAudio/RtMidi for another backend (JACK, PipeWire, a plugin
 // wrapper, ...) means reimplementing this layer only; core/dsp/synth stay
 // untouched.
+// Panel actions that have no MIDI message to be expressed as. They are
+// queued rather than performed where the button is read, because they
+// rewrite the whole parameter set and must not race with a Program Change
+// arriving on the audio thread at the same moment.
+enum class HostCommand : uint8_t {
+    RevertPreset,  // current slot back to the values the instrument started with
+};
+
 class StandaloneHost {
 public:
     struct Options {
@@ -76,6 +85,10 @@ public:
     // full, which needs a flood of presses to achieve.
     bool sendControlEvent(const MidiEvent& event){ return controlEvents_.push(event); }
 
+    // Same contract as sendControlEvent: control thread in, audio thread
+    // out, applied at the start of the next block.
+    bool sendCommand(HostCommand command){ return commands_.push(command); }
+
     // times a block's MidiBuffer filled up and the remaining events were
     // deferred to the next block (nothing is lost; high values mean the
     // audio callback is stalling or a controller is flooding CCs)
@@ -89,6 +102,7 @@ private:
     MidiInput* activeMidi_ = &seqMidi_;
     MidiBuffer midiBuffer_;
     SpscRingBuffer<MidiEvent, 64> controlEvents_;
+    SpscRingBuffer<HostCommand, 16> commands_;
     std::atomic<uint64_t> midiOverflow_{0};
 };
 

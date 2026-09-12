@@ -25,6 +25,17 @@ bool StandaloneHost::start(const Options& options){
         options.audioDeviceId, options.sampleRate, options.bufferFrames,
         options.channels,
         [this](AudioBufferView& output){
+            // Panel commands first, so a CC or knob move in the same block
+            // still lands on top of a revert rather than under it.
+            HostCommand command;
+            while(commands_.pop(command)){
+                if(command == HostCommand::RevertPreset){
+                    if(PresetBank* bank = processor_.presets()){
+                        bank->revertCurrent();
+                    }
+                }
+            }
+
             midiBuffer_.clear();
             MidiEvent event;
             // Stop draining when the block buffer is full: the remaining

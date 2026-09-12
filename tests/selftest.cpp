@@ -423,6 +423,71 @@ int main(){
         expect(bank.current() == 0, "presets: a full lap of next returns to the start");
     }
 
+    // revert: back to the values the bank was built with, which is not the
+    // same as reloading the slot once it has been left and re-entered
+    {
+        ParameterSet parameters;
+        Parameter* a = parameters.add("a", "A", 0.0f, 1.0f, 0.25f);
+        PresetBank bank(parameters);
+        bank.add("one");          // slot 0 is registered holding 0.25
+        a->set(0.9f);
+        bank.add("two");          // slot 1 is registered holding 0.9
+        bank.loadCurrent();       // as an instrument does after registering
+
+        expect(a->get() == 0.25f, "revert: the bank starts on slot 0's values");
+        a->set(0.5f);             // edit slot 0
+        expect(bank.revertCurrent() && a->get() == 0.25f,
+               "revert: an edit to the current slot is undone");
+
+        // the case loadCurrent() cannot serve: leaving stores the edits, so
+        // the slot's own copy becomes the edited sound
+        a->set(0.7f);
+        bank.select(1);
+        bank.select(0);
+        expect(a->get() == 0.7f, "revert: leaving and returning keeps the edits");
+        bank.loadCurrent();
+        expect(a->get() == 0.7f, "revert: reloading the slot cannot undo them");
+        expect(bank.revertCurrent() && a->get() == 0.25f,
+               "revert: the startup values are restored anyway");
+
+        // and the slot stays reverted afterwards, not just the live value
+        a->set(0.4f);
+        bank.select(1);
+        bank.select(0);
+        expect(a->get() == 0.4f, "revert: editing after a revert behaves normally");
+        bank.revertCurrent();
+        bank.select(1);
+        bank.select(0);
+        expect(a->get() == 0.25f, "revert: the reverted slot stays reverted");
+
+        expect(bank.revision() != 0, "revert: bulk loads bump the revision");
+    }
+
+    // a revert reloads the slot it is already on, so a display keyed on the
+    // slot number alone would miss it and report ~100 parameter lines
+    {
+        PdSynthProcessor pd;
+        ParameterMonitor monitor(pd);
+        struct CountingDisplay : ParameterDisplay {
+            int parameters = 0;
+            int presets = 0;
+            void showParameter(const DisplayLine&) override { parameters++; }
+            void showPreset(int, const std::string&) override { presets++; }
+        } display;
+        monitor.addDisplay(&display);
+        monitor.poll();
+
+        pd.parameters().byId("volume")->set(0.3f);
+        monitor.poll();
+        display.parameters = 0;
+        display.presets = 0;
+
+        pd.presets()->revertCurrent();
+        monitor.poll();
+        expect(display.presets == 1 && display.parameters == 0,
+               "monitor: a revert is reported as one preset line");
+    }
+
     // every factory preset must actually make a sound (fresh instrument, so
     // no edits from the case above are carried in)
     {

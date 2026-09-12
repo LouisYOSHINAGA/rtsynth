@@ -1,6 +1,7 @@
 #pragma once
 
 #include <atomic>
+#include <cstdint>
 #include <string>
 #include <vector>
 
@@ -37,6 +38,10 @@ public:
         names_.push_back(std::move(name));
         values_.push_back(std::move(values));
         store(count() - 1);
+        // A second, never-overwritten copy: values_ tracks the sound as it
+        // is being edited, factory_ stays as the instrument registered it,
+        // which is what revertCurrent() undoes back to.
+        factory_.push_back(values_.back());
         return count() - 1;
     }
 
@@ -56,12 +61,43 @@ public:
         store(current());
         load(index);
         current_.store(index, std::memory_order_relaxed);
+        revision_.fetch_add(1, std::memory_order_relaxed);
         return true;
     }
 
     // Make the current slot's stored values live without saving anything —
     // used once after registering the factory bank. RT-safe.
-    void loadCurrent(){ load(current()); }
+    void loadCurrent(){
+        load(current());
+        revision_.fetch_add(1, std::memory_order_relaxed);
+    }
+
+    // Undo every edit made to the current slot, back to the values the
+    // instrument registered at startup — the "panel revert" of a hardware
+    // synth. This is deliberately not loadCurrent(): select() saves the
+    // live values into the slot on the way out, so by the time you have
+    // switched away and back, the slot's own copy *is* the edited sound
+    // and reloading it would restore nothing.
+    //
+    // Returns false for an empty bank. RT-safe: the copy is element-wise
+    // between two vectors that were sized once at registration.
+    bool revertCurrent(){
+        if(empty()){
+            return false;
+        }
+        const size_t index = static_cast<size_t>(current());
+        for(size_t i = 0; i < values_[index].size(); i++){
+            values_[index][i] = factory_[index][i];
+        }
+        load(current());
+        revision_.fetch_add(1, std::memory_order_relaxed);
+        return true;
+    }
+
+    // Bumped whenever every parameter changes at once (a preset switch or
+    // a revert). A display watching this reports one line instead of the
+    // hundred-odd parameter changes the bulk load produces.
+    uint32_t revision() const { return revision_.load(std::memory_order_relaxed); }
 
     // The slot `delta` steps away in ring order: stepping past either end
     // continues from the other one, so a pair of panel buttons can reach
@@ -95,7 +131,9 @@ private:
     ParameterSet& parameters_;
     std::vector<std::string> names_;
     std::vector<std::vector<float>> values_;
+    std::vector<std::vector<float>> factory_;
     std::atomic<int> current_{0};
+    std::atomic<uint32_t> revision_{0};
 };
 
 }  // namespace rtsynth
