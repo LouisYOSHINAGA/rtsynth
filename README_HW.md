@@ -353,10 +353,14 @@ HandlePowerKeyLongPress=poweroff
 ぶら下げます。
 
 ```
-  3V3 ──[内部プルアップ]── GPIOn ──┬── スイッチ ── GND
-                                   │
-              3V3 ──[R]──▶|(LED)───┘
+                    ┌── GPIO5 (物理29)
+  3V3 ─[R]─▶|(LED)──┤
+  (物理1)           └── SW1 ── GND (物理30)
 ```
+
+LED は**足の長い方（アノード）を 3V3 側、短い方（カソード）を GPIO 側**に向けます。
+R は LED のどちら側に入れても構いません。preset − / + の 2 個に付けるなら、これを
+GPIO5 と GPIO6 に 1 組ずつ、3V3 は共用で作ります（**GPIO は 1 本も増えません**）。
 
 - スイッチを離している間: LED 側に電流の帰り道が無いので**消灯**（弱いプルアップとして
   働くだけで、GPIO は HIGH のまま）
@@ -367,6 +371,34 @@ HandlePowerKeyLongPress=poweroff
 「押している間だけ光る」で良ければこれで十分です。**現在のプリセット番号を光らせる**
 ような使い方をしたい場合は、LED を GPIO 出力に直結して（R 直列）ソフトから制御する
 形になります。その場合は LED 1 個につき GPIO を 1 本消費します。
+
+### 全部つないだときのピン一覧
+
+組み上げるときはこの表だけ見れば足ります（Step 3 の MCP3008 と Step 4 の
+エンコーダは使う場合のみ）。
+
+| 機能 | 行き先 | Pi 物理ピン | Pi GPIO |
+|---|---|---|---|
+| **DAC** VIN | 5V | 2 | — |
+| **DAC** GND | GND | 6 | — |
+| **DAC** BCK | I2S BCLK | 12 | GPIO18 |
+| **DAC** LCK | I2S LRCLK | 35 | GPIO19 |
+| **DAC** DIN | I2S DOUT | 40 | GPIO21 |
+| **LCD** VCC | 5V | 4 | — |
+| **LCD** GND | GND | 9 | — |
+| **LCD** SDA | SDA1 | 3 | GPIO2 |
+| **LCD** SCL | SCL1 | 5 | GPIO3 |
+| **SW1** preset − | 入力 | **29** | **GPIO5** |
+| **SW2** preset + | 入力 | **31** | **GPIO6** |
+| **SW3** revert | 入力 | **33** | **GPIO13** |
+| SW1/SW2 の GND | GND | **30** | — |
+| SW3 の GND | GND | **34** | — |
+| **shutdown SW** | 入力 | 37 | GPIO26 |
+| shutdown SW の GND | GND | 39 | — |
+| LED を付ける場合の 3V3 | 3V3 | 1 または 17 | — |
+
+物理 29・30・31 が連続しているので、SW1 と SW2 は**真ん中の 30 番 GND を共用**できます。
+SW3 は 33 番と、隣の 34 番 GND です。
 
 ## 8. Step 7: 仕上げ — 権限・安定化・自動起動
 
