@@ -227,6 +227,7 @@ WantedBy=multi-user.target
 | `--list-presets` | プリセット一覧を表示して終了 |
 | `--voices <n>` | ポリフォニー上限 |
 | `--adc`, `--enc` | 物理コントロールの割当（[1.6](#16-物理コントロールツマミエンコーダ)） |
+| `--button <pin>=<動作>` | パネルボタンの割当（`preset-next` / `preset-prev` / `panic`） |
 | `--lcd <addr>` | 16x2 I2C LCD にパラメータを表示（例 `--lcd 0x27`、[1.6](#表示lcd--oledと--v-のパラメータ表示)） |
 | `--lcd-bus <path>` | LCD の I2C バス（既定 `/dev/i2c-1`） |
 | `-v, --verbose [種類]` | 動作トレース。引数なしで全部、カンマ区切りで種類を指定（[2.7](#診断オプション)） |
@@ -312,6 +313,45 @@ EC11 等を GPIO に直結できます。A/B 端子を任意の GPIO へ、C（�
 カーネル標準の GPIO キャラクタデバイス（外部ライブラリ不要）でエッジイベントを受け、
 専用スレッドで直交デコードします。ポット（絶対値）と違い「現在値からの相対操作」なので、
 MIDI CC と取り合いになっても値が飛びません。
+
+### パネルボタン（タクトスイッチ直結）
+
+タクトスイッチを GPIO に直結できます。片足を GPIO、もう片足を GND へ。
+エンコーダと同じく**内部プルアップを使うので外付け抵抗は不要**です。
+
+```sh
+./build/rtsynth --synth pd --button 5=preset-prev --button 6=preset-next
+./build/rtsynth --synth pd --button 5=preset-prev --button 6=preset-next --button 13=panic
+./build/rtsynth --button-chip /dev/gpiochip4 ...    # Pi 5 等でチップ番号が違う場合
+```
+
+| 動作 | 内容 |
+|---|---|
+| `preset-next` | 次のプリセットへ。最後まで行くと**先頭へ回り込みます** |
+| `preset-prev` | 前のプリセットへ。先頭で押すと**末尾へ回り込みます** |
+| `panic` | 全チャンネル即時消音（CC120 相当） |
+
+チャタリング除去は**カーネル側**が行うので（GPIO chardev v2 の
+`GPIO_V2_LINE_ATTR_ID_DEBOUNCE`、既定 5 ms）、コンデンサも待ち時間も不要です。
+カーネルが対応していない場合は起動時に `(no kernel debounce)` と表示されます。
+
+ボタンの押下は **Program Change / CC のイベントに変換されてオーディオスレッドに渡されます**。
+MIDI から同じ操作をしたときと完全に同じ経路を通るので、LCD 表示も `-v` の出力も
+MIDI 経由の場合と同一です。
+
+**押すと光る LED を付けたい場合**、LED をスイッチと **GPIO の間に直列**に入れてはいけません
+（GPIO が LED の順電圧までしか下がらず、LOW と判定されません）。次のように
+**GPIO とは別の枝**にぶら下げます。
+
+```
+  3V3 ──[内部プルアップ]── GPIOn ──┬── スイッチ ── GND
+                                   │
+              3V3 ──[R]──▶|(LED)───┘
+```
+
+スイッチを離しているときは LED 側に電流の帰り道が無いので消灯（同時に弱いプルアップとして
+働くだけ）、押すとノードが GND に落ちて点灯します。GPIO には LED の電流が流れません。
+R は 330Ω〜1kΩ 程度（3.3V・Vf 2.0V で 4mA〜1.3mA）。
 
 ### 表示（LCD / OLED）と `-v` のパラメータ表示
 
@@ -435,12 +475,14 @@ LCD は溢れた分を黙って切り捨ててしまうため、全パラメー�
 
 ## 1.8 プリセット（Program Change）
 
-pd 音源は 8 個のファクトリプリセットを持ち、**MIDI Program Change で切り替え**られます。
+pd 音源は 11 個のプリセット（ファクトリ 8 + ユーザ 3）を持ち、**MIDI Program Change**
+または**パネルボタン**（[1.6](#16-物理コントロールツマミエンコーダ)）で切り替えられます。
 番号はそのまま Program Change の値（0 始まり）です。
 
 ```sh
 ./build/rtsynth --synth pd --list-presets   # 一覧
 ./build/rtsynth --synth pd --preset 6       # Mono Bass で起動
+./build/rtsynth --synth pd --button 5=preset-prev --button 6=preset-next
 ```
 
 | # | 名前 | 概要 |
@@ -453,6 +495,10 @@ pd 音源は 8 個のファクトリプリセットを持ち、**MIDI Program Ch
 | 5 | Bell | 1+1' デチューンの減衰ベル |
 | 6 | Mono Bass | Mono（SOLO）、2 段 DCW の短いベース |
 | 7 | Dual Detune | 1+2'（Line1 ノコギリ＋Line2 矩形）のデチューン |
+| 8–10 | User 1–3 | **編集用の空きスロット**。中身は素の初期値のみ（= Init Saw と同じ） |
+
+ユーザスロットを末尾に置いてあるのは、今後ファクトリ音色を足してもユーザスロットの
+Program Change 番号が動かないようにするためです。
 
 **編集とプリセットの関係**（`src/core/PresetBank.hpp`）:
 
@@ -460,7 +506,8 @@ pd 音源は 8 個のファクトリプリセットを持ち、**MIDI Program Ch
   プリセット用の別経路はありません
 - Program Change を受けると、**離れるスロットに現在の値を保存**してから次を読み込みます。
   つまり戻ってくれば編集後の音が復元されます
-- 編集内容は RAM 上のみで、**再起動するとファクトリの状態に戻ります**（保存は未実装）
+- 編集内容は RAM 上のみで、**再起動するとファクトリの状態に戻ります**（保存は未実装）。
+  ユーザスロットも例外ではありません
 - 存在しない番号の Program Change は無視されます
 
 `-v` で実行中にプリセットを切り替えると `[preset] 6: Mono Bass` の 1 行だけが出ます

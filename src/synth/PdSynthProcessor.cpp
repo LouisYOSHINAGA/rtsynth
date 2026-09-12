@@ -329,6 +329,15 @@ void PdSynthProcessor::registerFactoryPresets(){
             rate(0, kEgDca, 0, 0.05), rate(0, kEgDca, 1, 0.4),
             rate(1, kEgDca, 0, 0.05), rate(1, kEgDca, 1, 0.4),
         }},
+        // Slots to edit and keep: bare defaults, no overrides, so they are
+        // a starting point rather than someone else's sound. Edits to any
+        // slot survive switching away and back (PresetBank stores on the
+        // way out); these are simply the ones nothing is lost by
+        // overwriting. They are last so the factory sounds keep their
+        // Program Change numbers when more are added.
+        {"User 1", {}},
+        {"User 2", {}},
+        {"User 3", {}},
     };
 
     for(const FactoryPreset& preset : factory){

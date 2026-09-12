@@ -63,6 +63,20 @@ public:
     // used once after registering the factory bank. RT-safe.
     void loadCurrent(){ load(current()); }
 
+    // The slot `delta` steps away in ring order: stepping past either end
+    // continues from the other one, so a pair of panel buttons can reach
+    // every slot without a dead stop at each end. Returns the current slot
+    // for an empty bank.
+    int neighbour(int delta) const {
+        if(empty()){
+            return current();
+        }
+        const int slots = count();
+        // delta may be any size; the double modulo keeps the result in
+        // [0, slots) for negative values too
+        return ((current() + delta) % slots + slots) % slots;
+    }
+
 private:
     void store(int index){
         std::vector<float>& values = values_[static_cast<size_t>(index)];

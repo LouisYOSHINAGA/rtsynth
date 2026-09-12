@@ -18,6 +18,7 @@
 #include <vector>
 
 #include "host/ControlLoop.hpp"
+#include "host/GpioButtonInput.hpp"
 #include "host/GpioEncoderInput.hpp"
 #include "host/I2cLcd1602.hpp"
 #include "host/LcdParameterDisplay.hpp"
@@ -70,6 +71,10 @@ void printUsage(const char* argv0){
         "                       repeatable (e.g. --enc 17,27=line1_dcw_level1)\n"
         "  --enc-chip <path>    GPIO chip of the encoders (default: /dev/gpiochip0)\n"
         "  --enc-step <size>    normalized change per encoder detent (default: 0.01)\n"
+        "  --button <pin>=<act> map a panel button on a GPIO pin to an action,\n"
+        "                       repeatable. Actions: preset-next, preset-prev, panic\n"
+        "                       (e.g. --button 5=preset-prev --button 6=preset-next)\n"
+        "  --button-chip <path> GPIO chip of the buttons (default: /dev/gpiochip0)\n"
         "  --lcd <addr>         show the last-changed parameter on a 16x2 I2C LCD\n"
         "                       at this address (e.g. --lcd 0x27; find with i2cdetect)\n"
         "  --lcd-bus <path>     I2C bus of the LCD (default: /dev/i2c-1)\n"
@@ -211,6 +216,16 @@ struct EncoderMapping {
     std::string paramId;
 };
 
+// A panel button and what pressing it does. Kept as a string until the
+// instrument is built, so an action that needs presets can say so with a
+// real message instead of silently doing nothing.
+struct ButtonMapping {
+    unsigned int pin;
+    std::string action;
+};
+
+constexpr const char* kButtonActions = "preset-next, preset-prev, panic";
+
 struct CliOptions {
     rtsynth::StandaloneHost::Options host;
     std::string synthName = "sine";
@@ -222,6 +237,8 @@ struct CliOptions {
     std::vector<EncoderMapping> encoderMappings;
     std::string encoderChip = "/dev/gpiochip0";
     float encoderStep = 0.01f;
+    std::vector<ButtonMapping> buttonMappings;
+    std::string buttonChip = "/dev/gpiochip0";
     int lcdAddress = -1;               // -1 = no LCD
     std::string lcdBus = "/dev/i2c-1";
     int maxVoices = 0;                 // 0 = instrument default
@@ -304,6 +321,22 @@ bool parseArguments(int argc, char* argv[], CliOptions& cli, bool& exitRequested
                         static_cast<unsigned int>(std::stoul(pins.substr(comma + 1))),
                         id});
                 }
+            }else if(arg == "--button"){
+                if(const char* v = nextArg()){
+                    std::string pin, action;
+                    if(!splitAssignment(v, "--button", pin, action)) return false;
+                    if(action != "preset-next" && action != "preset-prev"
+                       && action != "panic"){
+                        std::cerr << "--button action '" << action
+                                  << "' is unknown. Available: " << kButtonActions
+                                  << std::endl;
+                        return false;
+                    }
+                    cli.buttonMappings.push_back(
+                        {static_cast<unsigned int>(std::stoul(pin)), action});
+                }
+            }else if(arg == "--button-chip"){
+                if(const char* v = nextArg()) cli.buttonChip = v;
             }else if(arg == "--enc-chip"){
                 if(const char* v = nextArg()) cli.encoderChip = v;
             }else if(arg == "--enc-step"){
@@ -502,6 +535,51 @@ int main(int argc, char* argv[]){
 
     if(!cli.adcMappings.empty() || !cli.encoderMappings.empty()){
         controlLoop.start();
+    }
+
+    // Panel buttons. Declared before the driver so the strings the handler
+    // reads outlive the thread reading them (destruction runs in reverse).
+    std::vector<std::string> buttonActions;
+    rtsynth::GpioButtonInput buttons;
+    if(!cli.buttonMappings.empty()){
+        const bool havePresets = (presets != nullptr && !presets->empty());
+        for(const ButtonMapping& mapping : cli.buttonMappings){
+            if(!havePresets && mapping.action.rfind("preset-", 0) == 0){
+                std::cerr << "--button " << mapping.pin << "=" << mapping.action
+                          << " needs an instrument with presets; " << synth->name()
+                          << " has none." << std::endl;
+                return 1;
+            }
+            buttons.addButton(mapping.pin);
+            buttonActions.push_back(mapping.action);
+        }
+
+        // Runs on the button thread: it may only touch lock-free state, so
+        // every action becomes an event for the audio thread to apply.
+        buttons.setStateHandler(
+            [&host, &buttonActions, presets](int channel, bool pressed){
+                if(!pressed){
+                    return;  // act on the press; the release edge is spare
+                }
+                const std::string& action = buttonActions[static_cast<size_t>(channel)];
+                if(action == "panic"){
+                    // CC120 All Sound Off, the same message a panic button
+                    // on a MIDI controller sends
+                    host.sendControlEvent(rtsynth::MidiEvent::controlChange(0, 120, 0));
+                    return;
+                }
+                const int delta = (action == "preset-next")? +1 : -1;
+                host.sendControlEvent(rtsynth::MidiEvent::programChange(
+                    0, static_cast<uint8_t>(presets->neighbour(delta))));
+            });
+
+        if(!buttons.open(cli.buttonChip)){
+            return 1;
+        }
+        std::cout << "Buttons: " << cli.buttonMappings.size() << " on "
+                  << cli.buttonChip
+                  << (buttons.debounceActive()? "" : " (no kernel debounce)")
+                  << std::endl;
     }
 
     // optional 16x2 I2C LCD. It is a ParameterDisplay like the console

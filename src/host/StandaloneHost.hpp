@@ -5,6 +5,7 @@
 #include <vector>
 
 #include "../core/Processor.hpp"
+#include "../core/SpscRingBuffer.hpp"
 #include "MidiInput.hpp"
 #include "RawMidiInput.hpp"
 #include "RtAudioOutput.hpp"
@@ -64,6 +65,17 @@ public:
     // caller can report the new midi().description().
     bool rescanMidi(){ return activeMidi_->rescan(); }
 
+    // Inject an event the panel generated rather than received over MIDI
+    // (a button pressing Program Change, say). It joins the block's
+    // MidiBuffer alongside the real MIDI, so the instrument handles it
+    // through the one path it already has and the audio thread stays the
+    // only thread touching voices or presets.
+    //
+    // Producer: the control thread (GpioButtonInput's event thread is the
+    // single producer this queue allows). Returns false if the queue is
+    // full, which needs a flood of presses to achieve.
+    bool sendControlEvent(const MidiEvent& event){ return controlEvents_.push(event); }
+
     // times a block's MidiBuffer filled up and the remaining events were
     // deferred to the next block (nothing is lost; high values mean the
     // audio callback is stalling or a controller is flooding CCs)
@@ -76,6 +88,7 @@ private:
     RawMidiInput rawMidi_;
     MidiInput* activeMidi_ = &seqMidi_;
     MidiBuffer midiBuffer_;
+    SpscRingBuffer<MidiEvent, 64> controlEvents_;
     std::atomic<uint64_t> midiOverflow_{0};
 };
 

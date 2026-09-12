@@ -11,6 +11,7 @@
 
 #include "../src/core/MidiBuffer.hpp"
 #include "../src/core/MidiStreamParser.hpp"
+#include "../src/core/PresetBank.hpp"
 #include "../src/core/SpscRingBuffer.hpp"
 #include "../src/dsp/SmoothedValue.hpp"
 #include "../src/host/ControlLoop.hpp"
@@ -389,6 +390,39 @@ int main(){
 
     }
 
+    // panel preset buttons: the ring order they step through. Buttons send
+    // the slot neighbour() names as a Program Change, so this is the whole
+    // of "next"/"previous" including the wrap at both ends.
+    {
+        ParameterSet parameters;
+        parameters.add("a", "A", 0.0f, 1.0f, 0.25f);
+        parameters.add("b", "B", 0.0f, 1.0f, 0.5f);
+        PresetBank bank(parameters);
+        expect(bank.neighbour(+1) == 0 && bank.neighbour(-1) == 0,
+               "presets: an empty bank has nowhere to step");
+
+        bank.add("one");
+        bank.add("two");
+        bank.add("three");
+
+        expect(bank.current() == 0, "presets: a new bank starts on slot 0");
+        expect(bank.neighbour(+1) == 1, "presets: next steps forward");
+        expect(bank.neighbour(-1) == 2, "presets: previous from the first wraps to the last");
+
+        bank.select(bank.neighbour(-1));
+        expect(bank.current() == 2, "presets: stepping back from slot 0 selects the last");
+        expect(bank.neighbour(+1) == 0, "presets: next from the last wraps to the first");
+
+        bank.select(bank.neighbour(+1));
+        expect(bank.current() == 0, "presets: stepping forward from the last selects the first");
+
+        // pressing next N times must visit every slot and come home
+        for(int i = 0; i < bank.count(); i++){
+            bank.select(bank.neighbour(+1));
+        }
+        expect(bank.current() == 0, "presets: a full lap of next returns to the start");
+    }
+
     // every factory preset must actually make a sound (fresh instrument, so
     // no edits from the case above are carried in)
     {
@@ -471,6 +505,34 @@ int main(){
     // columns of its LCD. LcdParameterDisplay truncates silently, so an
     // overlong name or value does not fail anywhere — it just reaches the
     // instrument as a cut-off word ("Resonance III Tra"). Sweep every
+    // the user slots: last in the bank so the factory Program Change
+    // numbers stay put, and holding nothing but the plain defaults
+    {
+        PdSynthProcessor pd;
+        PresetBank* bank = pd.presets();
+        expect(bank->count() >= 4, "pd: the bank has factory slots plus user slots");
+        const int firstUser = bank->count() - 3;
+        expect(bank->name(firstUser) == "User 1"
+               && bank->name(firstUser + 1) == "User 2"
+               && bank->name(firstUser + 2) == "User 3",
+               "pd: three user slots sit at the end of the bank");
+
+        // slot 0 ("Init Saw") is the bare default patch, so a user slot
+        // must load exactly the same values as it
+        bank->select(0);
+        std::vector<float> defaults;
+        for(auto& parameter : pd.parameters()){
+            defaults.push_back(parameter->get());
+        }
+        bank->select(firstUser);
+        bool same = true;
+        size_t index = 0;
+        for(auto& parameter : pd.parameters()){
+            same = same && parameter->get() == defaults[index++];
+        }
+        expect(same, "pd: a user slot starts from the plain defaults");
+    }
+
     // parameter across its whole range, plus every preset, and measure.
     {
         struct WidestDisplay : ParameterDisplay {

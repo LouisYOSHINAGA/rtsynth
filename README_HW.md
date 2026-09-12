@@ -25,6 +25,8 @@ Raspberry Pi と rtsynth でハードシンセを組むための、部品購入�
 | 可変抵抗（ポテンショメータ）10kΩ Bカーブ ×必要数 | 1個 50〜100円 | ツマミ | Step 3 |
 | ロータリーエンコーダ EC11（ノブ付きが楽） | 100〜300円 | 相対値ツマミ | Step 4 |
 | 1602 LCD + I2C バックパック（PCF8574、はんだ済みが楽） | 300〜600円 | パラメータ表示 | Step 5 |
+| タクトスイッチ（6mm 4本足が定番）×3〜4 | 1個 10〜30円 | プリセット切替・電源断 | Step 6 |
+| LED + 抵抗 330Ω〜1kΩ（任意） | 1個 10〜20円 | ボタンの押下表示 | Step 6 |
 
 - 秋月電子・スイッチサイエンス・Amazon・AliExpress あたりで全部揃います
 - はんだ付けを避けたいなら「ピンヘッダはんだ済み」のモジュールを選ぶこと
@@ -287,7 +289,84 @@ Program Change でプリセットを切り替えたときは `PRESET 6` / `Mono 
   A0/A1/A2 のはんだジャンパを片方だけ short してアドレスをずらす必要があります
   （rtsynth 側は現状 1 枚のみ対応）
 
-## 7. Step 6: 仕上げ — 権限・安定化・自動起動
+## 7. Step 6: パネルボタン — プリセット切替と電源断（配線3〜4本）
+
+タクトスイッチを GPIO に直結します。**片足を GPIO、もう片足を GND** へ。
+内部プルアップを使うので**外付け抵抗もコンデンサも不要**、チャタリング除去は
+カーネルがやります。4 本足のタクトスイッチは向かい合う 2 本が内部で繋がっているので、
+**対角の 2 本**を使えば確実です。
+
+### ピン割当（他機能と衝突しないもの）
+
+物理ピン 29/31/33 は**同じ列に並んでいて、間と隣が GND** なので、3 個のボタンで
+GND を共用でき配線が短く済みます。
+
+| 用途 | GPIO | 物理ピン | 近い GND |
+|---|---|---|---|
+| プリセット ← | GPIO5 | 29 | 30 |
+| プリセット → | GPIO6 | 31 | 30 |
+| 予備（panic 等） | GPIO13 | 33 | 34 |
+| 電源断（shutdown） | GPIO26 | 37 | 39 |
+
+いずれも SPI(7–11) / I2C(2,3) / I2S(18–21) / UART(14,15) と重なりません。
+
+### 配線後の確認と起動
+
+```sh
+./build/rtsynth --synth pd --lcd 0x27 \
+  --button 5=preset-prev --button 6=preset-next --button 13=panic
+```
+
+`preset-next` / `preset-prev` は端まで行くと反対の端へ回り込みます。押すと LCD の表示が
+切り替わります。`panic` は全音を即時停止します（CC120 相当）。
+
+### ⚠ shutdown ボタンのピンは GPIO3 から移すこと
+
+`dtoverlay=gpio-shutdown` の**既定値は GPIO3 ですが、GPIO3 は I2C の SCL** です。
+Step 5 の LCD と同じ線を共有することになり、I2C 通信中の意図しないシャットダウンや
+LCD の不安定化を招きます。別ピンへ移してください。
+
+```
+# /boot/firmware/config.txt
+dtoverlay=gpio-shutdown,gpio_pin=26,active_low=1,gpio_pull=up
+```
+
+- トレードオフ: **halt 状態から電源ボタンで復帰できるのは GPIO3 だけ**です。
+  その機能が要るなら GPIO3 のまま使い、代わりに LCD を別の I2C バス
+  （`dtoverlay=i2c6,pins_22_23` 等）へ逃がしてください
+- このオーバーレイは「押した瞬間」にシャットダウンします。**長押しで確定**にしたい場合は
+  systemd 側で切り替えます（systemd 248 以降、長押し判定は 5 秒）:
+
+```
+# /etc/systemd/logind.conf.d/powerkey.conf
+[Login]
+HandlePowerKey=ignore
+HandlePowerKeyLongPress=poweroff
+```
+
+### 押すと光る LED（任意）
+
+**LED をスイッチと GPIO の間に直列に入れてはいけません。** GPIO が LED の順電圧
+（1.8〜3.2V）までしか下がらず、押しても LOW と判定されません。GPIO とは**別の枝**に
+ぶら下げます。
+
+```
+  3V3 ──[内部プルアップ]── GPIOn ──┬── スイッチ ── GND
+                                   │
+              3V3 ──[R]──▶|(LED)───┘
+```
+
+- スイッチを離している間: LED 側に電流の帰り道が無いので**消灯**（弱いプルアップとして
+  働くだけで、GPIO は HIGH のまま）
+- スイッチを押した瞬間: ノードが GND に落ちて**点灯**。電流は GPIO ではなくスイッチを
+  通って GND に流れるので、GPIO の電流制限を気にする必要はありません
+- R は 330Ω〜1kΩ（3.3V・Vf 2.0V で 4mA〜1.3mA）。暗ければ R を小さく
+
+「押している間だけ光る」で良ければこれで十分です。**現在のプリセット番号を光らせる**
+ような使い方をしたい場合は、LED を GPIO 出力に直結して（R 直列）ソフトから制御する
+形になります。その場合は LED 1 個につき GPIO を 1 本消費します。
+
+## 8. Step 7: 仕上げ — 権限・安定化・自動起動
 
 ### 権限（Permission denied が出たら）
 
@@ -332,7 +411,7 @@ sudo systemctl enable --now rtsynth
 journalctl -u rtsynth -f      # ログ確認
 ```
 
-## 8. トラブルシューティング早見表
+## 9. トラブルシューティング早見表
 
 | 症状 | まず疑うこと |
 |---|---|
@@ -348,16 +427,19 @@ journalctl -u rtsynth -f      # ログ確認
 | 起動画面は出るが値が更新されない | 表示ではなく入力側の問題。`-v param` を併用し、コンソールにも出ないなら CC/ツマミ側を疑う |
 | `Failed to open I2C bus` | I2C 未有効化（`raspi-config`）か、`i2c` グループ未加入（下記の `usermod`） |
 | `Permission denied` 系 | 上記グループ追加、再ログイン |
+| ボタンが効かない | `--button` に渡すのは **GPIO 番号**（物理ピン番号ではない）。`gpio` グループに入っているか。起動時に `Buttons: N on /dev/gpiochip0` が出ているか |
+| ボタンを 1 回押すとプリセットが 2 つ進む | チャタリング。起動時に `(no kernel debounce)` と出ていないか確認する |
 | MIDI が来ない | `--list` のポート一覧に出ているか。`-v` で `[midi]` 行が出るか |
 | 和音でノートオフが取りこぼされ音が鳴りっぱなしになる | `--midi-raw hw:X,Y,Z`（ID は `--list` の Raw MIDI 欄）でカーネル直読みに切替。それでも出るなら rtsynth を止め `aseqdump` で鍵盤の送信自体を確認し、鍵盤のファームウェア更新・別ケーブル・セルフパワー USB ハブを試す（詳細手順は README の運用メモ参照） |
 
-## 9. 全部載せの起動例
+## 10. 全部載せの起動例
 
 ```sh
 ./build/rtsynth --synth pd \
   --adc 0=volume --adc 1=line1_dcw_level1 --adc 2=detune_fine \
   --enc 17,27=line1_dca_rate1 --enc 22,23=line1_dca_rate2 \
   --lcd 0x27 \
+  --button 5=preset-prev --button 6=preset-next --button 13=panic \
   -v
 ```
 

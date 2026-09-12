@@ -35,6 +35,12 @@ bool StandaloneHost::start(const Options& options){
             while(!midiBuffer_.full() && activeMidi_->pop(event)){
                 midiBuffer_.add(event);  // offset 0: applied at block start
             }
+            // panel buttons feed the same buffer, so a preset switch from
+            // a button and one from a Program Change are the same event
+            // on the same thread
+            while(!midiBuffer_.full() && controlEvents_.pop(event)){
+                midiBuffer_.add(event);
+            }
             if(midiBuffer_.full()){
                 midiOverflow_.fetch_add(1, std::memory_order_relaxed);
             }

@@ -44,6 +44,7 @@ pkg_check_modules(ALSA REQUIRED IMPORTED_TARGET alsa)  # raw MIDI backend
 
 add_executable(rtsynth
     src/main.cpp
+    src/host/GpioButtonInput.cpp
     src/host/GpioEncoderInput.cpp
     src/host/I2cLcd1602.cpp
     src/host/Mcp3008Input.cpp
