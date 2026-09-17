@@ -11,6 +11,10 @@ using namespace Steinberg::Vst;
 
 namespace {
 
+// Long enough that cutting a voice at full level is inaudible, short
+// enough that a preset button still feels instant.
+constexpr double kPresetSwitchFadeSeconds = 0.005;
+
 constexpr uint8_t kCcAllSoundOff = 120;
 constexpr uint8_t kCcAllNotesOff = 123;
 
@@ -290,6 +294,9 @@ void PdSynthProcessor::prepare(double sampleRate, int maxBlockSize){
     // The voices have no sample rate of their own: pd runs them at
     // kInternalSampleRate and the host converts (PDProcessor does the same
     // in setupProcessing).
+    switchFadeStep_ = static_cast<float>(1.0 / (kPresetSwitchFadeSeconds * sampleRate));
+    switchFadeGain_ = 1.0f;
+    pendingSwitch_ = PendingSwitch::None;
     internalTickStep_ = kInternalSampleRate / sampleRate;
     resamplePhase_ = 1.0;
     prevTickSample_ = 0.0;
@@ -301,6 +308,8 @@ void PdSynthProcessor::prepare(double sampleRate, int maxBlockSize){
 void PdSynthProcessor::reset(){
     releaseAllVoices();
     heldNotes_.clear();
+    pendingSwitch_ = PendingSwitch::None;
+    switchFadeGain_ = 1.0f;
 }
 
 // --- parameter plumbing ------------------------------------------------------
@@ -510,17 +519,21 @@ int PdSynthProcessor::effectiveMaxVoices() const {
 PdSynthProcessor::PdVoice* PdSynthProcessor::allocateVoice(){
     const int numVoices = effectiveMaxVoices();
     for(int i = 0; i < numVoices; i++){
-        if(voices_[static_cast<size_t>(i)].isFree()){
-            return &voices_[static_cast<size_t>(i)];
+        const size_t index = static_cast<size_t>(i);
+        // silenced voices are not mixed any more, so they are free again
+        if(voiceSilenced_[index] || voices_[index].isFree()){
+            unsilence(index);
+            return &voices_[index];
         }
     }
-    PdVoice* oldest = &voices_[0];
+    size_t oldest = 0;
     for(int i = 1; i < numVoices; i++){
-        if(voices_[static_cast<size_t>(i)].age() < oldest->age()){
-            oldest = &voices_[static_cast<size_t>(i)];
+        if(voices_[static_cast<size_t>(i)].age() < voices_[oldest].age()){
+            oldest = static_cast<size_t>(i);
         }
     }
-    return oldest;
+    unsilence(oldest);
+    return &voices_[oldest];
 }
 
 void PdSynthProcessor::onNoteOn(int channel, int note){
@@ -528,6 +541,7 @@ void PdSynthProcessor::onNoteOn(int channel, int note){
         if(heldNotes_.size() < heldNotes_.capacity()){  // stay allocation-free
             heldNotes_.push_back({channel, note});
         }
+        unsilence(0);
         voices_[0].noteOn(channel, note, nextVoiceAge_++);  // last-note priority
         return;
     }
@@ -537,9 +551,9 @@ void PdSynthProcessor::onNoteOn(int channel, int note){
     // if a note-off ever gets lost upstream, the next press+release of
     // the same key fully silences it, and the pool doesn't fill with
     // zombie voices).
-    for(PdVoice& voice : voices_){
-        if(voice.isHeld(channel, note)){
-            voice.noteOn(channel, note, nextVoiceAge_++);
+    for(size_t i = 0; i < voices_.size(); i++){
+        if(!voiceSilenced_[i] && voices_[i].isHeld(channel, note)){
+            voices_[i].noteOn(channel, note, nextVoiceAge_++);
             return;
         }
     }
@@ -554,8 +568,9 @@ void PdSynthProcessor::onNoteOff(int channel, int note){
                 heldNotes_.erase(heldNotes_.begin() + i);
             }
         }
-        if(voices_[0].isHeld(channel, note)){
+        if(!voiceSilenced_[0] && voices_[0].isHeld(channel, note)){
             if(!heldNotes_.empty()){
+                unsilence(0);
                 voices_[0].noteOn(heldNotes_.back().channel, heldNotes_.back().note,
                                   nextVoiceAge_++);
             }else{
@@ -565,8 +580,9 @@ void PdSynthProcessor::onNoteOff(int channel, int note){
         return;
     }
 
-    for(PdVoice& voice : voices_){
-        if(voice.isHeld(channel, note)){
+    for(size_t i = 0; i < voices_.size(); i++){
+        PdVoice& voice = voices_[i];
+        if(!voiceSilenced_[i] && voice.isHeld(channel, note)){
             voice.noteOff();
         }
     }
@@ -578,6 +594,47 @@ void PdSynthProcessor::releaseAllVoices(){
             voice.noteOff();
         }
     }
+}
+
+void PdSynthProcessor::silenceAllVoices(){
+    for(size_t i = 0; i < voices_.size(); i++){
+        if(voices_[i].isActive()){
+            voices_[i].noteOff();       // so pd's own state ends up consistent
+            voiceSilenced_[i] = true;   // and this host stops mixing it
+        }
+    }
+}
+
+void PdSynthProcessor::beginPresetSwitch(PendingSwitch kind, int program){
+    // A second request during a fade just retargets it — mashing the preset
+    // button should not stack fades or replay them.
+    pendingSwitch_ = kind;
+    pendingProgram_ = program;
+}
+
+void PdSynthProcessor::applyPendingSwitch(){
+    const PendingSwitch kind = pendingSwitch_;
+    pendingSwitch_ = PendingSwitch::None;
+    silenceAllVoices();
+    heldNotes_.clear();
+    // The resampler interpolates between the last two engine ticks, so it
+    // still holds the old sound one tick after the voices stop — enough to
+    // leak a full-level sample past the fade and click. Clear it too.
+    prevTickSample_ = 0.0;
+    currTickSample_ = 0.0;
+    if(kind == PendingSwitch::Program){
+        presets_.select(pendingProgram_);
+    }else{
+        presets_.revertCurrent();
+    }
+    syncParameters();
+}
+
+void PdSynthProcessor::revertPreset(){
+    if(presets_.empty()){
+        return;
+    }
+    beginPresetSwitch(PendingSwitch::Revert, presets_.current());
 }
 
 // --- rendering ----------------------------------------------------------------
@@ -615,10 +672,11 @@ void PdSynthProcessor::handleEvent(const MidiEvent& event){
             break;
         }
         case MidiEvent::Type::ProgramChange:
-            // Save the edits made to the slot we are leaving, load the new
-            // one, then push the whole snapshot into the voices at once.
-            if(presets_.select(event.data1)){
-                syncParameters();
+            // Staged, not applied here: see the PendingSwitch comment. An
+            // unknown slot, or the one already selected, is ignored — it
+            // would otherwise cut the notes for no change in sound.
+            if(event.data1 < presets_.count() && event.data1 != presets_.current()){
+                beginPresetSwitch(PendingSwitch::Program, event.data1);
             }
             break;
     }
@@ -628,7 +686,7 @@ double PdSynthProcessor::generateTick(){
     double mixed = 0.0;
     for(int v = 0; v < voiceLimit_; v++){
         PdVoice& voice = voices_[static_cast<size_t>(v)];
-        if(voice.isActive()){
+        if(voice.isActive() && !voiceSilenced_[static_cast<size_t>(v)]){
             mixed += voice.generate(pitchBend_);
         }
     }
@@ -653,8 +711,19 @@ double PdSynthProcessor::resample(){
 
 void PdSynthProcessor::renderSegment(int startFrame, int numFrames){
     for(int i = 0; i < numFrames; i++){
-        monoScratch_[static_cast<size_t>(startFrame + i)] =
-            static_cast<float>(resample());
+        float sample = static_cast<float>(resample());
+        if(pendingSwitch_ != PendingSwitch::None){
+            sample *= switchFadeGain_;
+            switchFadeGain_ -= switchFadeStep_;
+            if(switchFadeGain_ <= 0.0f){
+                // silence reached: swap the sound here, where nothing is
+                // left to hear it happen. No fade back in — the voices are
+                // gone, so the next thing audible is a new note's attack.
+                applyPendingSwitch();
+                switchFadeGain_ = 1.0f;
+            }
+        }
+        monoScratch_[static_cast<size_t>(startFrame + i)] = sample;
     }
 }
 

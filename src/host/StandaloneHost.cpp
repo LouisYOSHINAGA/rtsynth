@@ -35,9 +35,7 @@ bool StandaloneHost::start(const Options& options){
             HostCommand command;
             while(commands_.pop(command)){
                 if(command == HostCommand::RevertPreset){
-                    if(PresetBank* bank = processor_.presets()){
-                        bank->revertCurrent();
-                    }
+                    processor_.revertPreset();
                 }
             }
 

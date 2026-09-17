@@ -72,6 +72,17 @@ public:
     // this to show which preset is live.
     virtual PresetBank* presets(){ return nullptr; }
 
+    // Restore the current preset to the values the instrument started with.
+    // Virtual rather than a direct presets()->revertCurrent() call from the
+    // host, because replacing every parameter under voices that are still
+    // sounding is audible: an instrument overrides this to silence them
+    // first (see PdSynthProcessor).
+    virtual void revertPreset(){
+        if(PresetBank* bank = presets()){
+            bank->revertCurrent();
+        }
+    }
+
     // The parameter a MIDI CC currently writes to, or nullptr when the
     // controller is unmapped. Lets a UI report "CC 46 -> L1 DCW Rate 1"
     // without duplicating the instrument's CC map. The answer may depend

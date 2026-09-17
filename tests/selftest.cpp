@@ -383,21 +383,22 @@ int main(){
         const float edited = rate->get();
         expect(edited != slot0, "pd: CC edits the live preset");
 
+        // a switch is staged behind a short fade, so give it a few blocks
         MidiBuffer program;
         program.add(MidiEvent::programChange(0, 1));
-        renderBlocks(pd, 1, program);
+        renderBlocks(pd, 4, program);
         expect(bank->current() == 1 && rate->get() != edited,
                "pd: program change loads another preset");
 
         MidiBuffer back;
         back.add(MidiEvent::programChange(0, 0));
-        renderBlocks(pd, 1, back);
+        renderBlocks(pd, 4, back);
         expect(bank->current() == 0 && rate->get() == edited,
                "pd: returning to a preset restores the edits made to it");
 
         MidiBuffer unknown;
         unknown.add(MidiEvent::programChange(0, 120));
-        renderBlocks(pd, 1, unknown);
+        renderBlocks(pd, 4, unknown);
         expect(bank->current() == 0, "pd: an out-of-range program change is ignored");
 
     }
@@ -433,6 +434,52 @@ int main(){
             bank.select(bank.neighbour(+1));
         }
         expect(bank.current() == 0, "presets: a full lap of next returns to the start");
+    }
+
+    // Switching preset under sounding voices: the new waveform and
+    // envelopes would otherwise be applied to them, turning a release tail
+    // into the new sound re-attacking.
+    {
+        PdSynthProcessor pd;
+        pd.prepare(kSampleRate, kBlockSize);
+        PresetBank* bank = pd.presets();
+
+        MidiBuffer chord;
+        chord.add(MidiEvent::noteOn(0, 60, 110));
+        chord.add(MidiEvent::noteOn(0, 64, 110));
+        chord.add(MidiEvent::noteOn(0, 67, 110));
+        expect(renderBlocks(pd, 60, chord) > 0.001f && pd.activeVoiceCount() == 3,
+               "switch: a held chord is sounding");
+
+        // keys still down, so nothing would stop on its own
+        MidiBuffer program;
+        program.add(MidiEvent::programChange(0, 1));
+        MidiBuffer empty;
+        renderBlocks(pd, 4, program);
+        expect(bank->current() == 1, "switch: the program change still lands");
+        expect(pd.activeVoiceCount() == 0,
+               "switch: the voices are dropped, not carried into the new sound");
+        expect(renderBlocks(pd, 20, empty) == 0.0f,
+               "switch: nothing re-attacks afterwards");
+
+        // and the instrument still plays on the new preset
+        MidiBuffer again;
+        again.add(MidiEvent::noteOn(0, 60, 110));
+        expect(renderBlocks(pd, 60, again) > 0.001f,
+               "switch: the new preset plays");
+
+        // a program change to the slot already selected must not cut notes
+        MidiBuffer same;
+        same.add(MidiEvent::programChange(0, 1));
+        renderBlocks(pd, 4, same);
+        expect(pd.activeVoiceCount() == 1,
+               "switch: reselecting the current preset leaves the notes alone");
+
+        // revert is staged the same way
+        pd.revertPreset();
+        renderBlocks(pd, 4, empty);
+        expect(pd.activeVoiceCount() == 0,
+               "switch: a revert drops the voices too");
     }
 
     // revert: back to the values the bank was built with, which is not the

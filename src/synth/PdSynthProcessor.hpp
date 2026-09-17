@@ -60,12 +60,15 @@ public:
     int activeVoiceCount() const override {
         int count = 0;
         for(int v = 0; v < voiceLimit_; v++){
-            if(voices_[static_cast<size_t>(v)].isActive()){
+            if(voices_[static_cast<size_t>(v)].isActive()
+               && !voiceSilenced_[static_cast<size_t>(v)]){
                 count++;
             }
         }
         return count;
     }
+
+    void revertPreset() override;  // staged like a program change
 
     // pd voices are expensive (per-sample transcendentals in pd's Voice and
     // PD generators), so capping polyphony is the main lever for fitting
@@ -112,6 +115,28 @@ private:
 
     void handleEvent(const MidiEvent& event);
     void renderSegment(int startFrame, int numFrames);
+
+    // --- preset switching --------------------------------------------------
+    // A preset replaces every parameter at once, waveform and envelopes
+    // included, and those belong to the voices that are still sounding: a
+    // release tail suddenly becomes the new sound, which reads as a note
+    // re-attacking by itself. So a switch does not happen where it is
+    // asked for. It is staged — fade the output down over a few
+    // milliseconds, drop the voices, then load — which costs an
+    // imperceptible delay and leaves nothing for the new parameters to
+    // land on.
+    //
+    // Dropping is rtsynth's own: pd's Voice can only be released, never
+    // stopped, so a silenced voice is one this host no longer mixes and
+    // treats as free. Its EG stops advancing (that happens inside
+    // generate()), so it costs nothing until it is allocated again.
+    enum class PendingSwitch : uint8_t { None, Program, Revert };
+
+    void beginPresetSwitch(PendingSwitch kind, int program);
+    void applyPendingSwitch();
+    void silenceAllVoices();
+    // clears the silenced flag: whatever is about to sound on this voice
+    void unsilence(size_t index){ voiceSilenced_[index] = false; }
     // one internal-rate tick: every active voice mixed, before volume
     double generateTick();
     // one output-rate sample, interpolated between internal-rate ticks
@@ -136,6 +161,12 @@ private:
     // output rate is, so the host side has to interpolate between ticks —
     // without this the pitch would be off by the ratio of the two rates.
     // resamplePhase_ starts at 1.0 so the first output sample ticks.
+    PendingSwitch pendingSwitch_ = PendingSwitch::None;
+    int pendingProgram_ = 0;
+    float switchFadeGain_ = 1.0f;
+    float switchFadeStep_ = 1.0f;  // per output sample, set in prepare()
+    std::array<bool, kMaxVoices> voiceSilenced_{};
+
     double internalTickStep_ = 1.0;
     double resamplePhase_ = 1.0;
     double prevTickSample_ = 0.0;
