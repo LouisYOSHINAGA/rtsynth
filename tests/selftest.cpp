@@ -22,6 +22,7 @@
 #include "../src/host/ParameterWatcher.hpp"
 #include "../src/synth/SineSynthProcessor.hpp"
 #ifdef RTSYNTH_HAVE_PD
+#include "../src/synth/PdPresets.hpp"
 #include "../src/synth/PdSynthProcessor.hpp"
 #endif
 
@@ -634,23 +635,33 @@ int main(){
     {
         PdSynthProcessor pd;
         PresetBank* bank = pd.presets();
-        expect(bank->count() >= 4, "pd: the bank has factory slots plus user slots");
-        const int firstUser = bank->count() - 3;
-        expect(bank->name(firstUser) == "Init"
-               && bank->name(firstUser + 1) == "User Demo 1"
-               && bank->name(firstUser + 2) == "User Demo 2",
-               "pd: three user slots sit at the end of the bank");
+        expect(bank->count() == pd_presets::kFactoryCount + pd_presets::kUserCount,
+               "pd: the bank is the factory group followed by the user group");
 
-        // The user slots hold the plain parameter defaults — checked against
-        // the parameters' own defaults rather than against another slot, so
-        // the factory bank can be regenerated without touching this.
-        for(int slot = firstUser; slot < bank->count(); slot++){
+        // the user group must be the tail of the bank, so that adding a
+        // factory sound never renumbers a user slot
+        const int firstUser = pd_presets::kFactoryCount;
+        bool tailMatches = true;
+        for(int i = 0; i < pd_presets::kUserCount; i++){
+            tailMatches = tailMatches
+                       && bank->name(firstUser + i) == pd_presets::kUser[i].name;
+        }
+        expect(tailMatches, "pd: the user slots sit at the end of the bank");
+
+        // every slot must load exactly what was generated for it: this is
+        // what says the .vstpreset conversion reaches the parameters
+        for(int slot = 0; slot < bank->count(); slot++){
+            const pd_presets::Preset& source =
+                (slot < firstUser)? pd_presets::kFactory[slot]
+                                  : pd_presets::kUser[slot - firstUser];
             bank->select(slot);
             bool same = true;
+            int index = 0;
             for(auto& parameter : pd.parameters()){
-                same = same && parameter->get() == parameter->defaultValue();
+                same = same
+                    && parameter->get() == static_cast<float>(source.values[index++]);
             }
-            expect(same, ("pd: user slot starts from the defaults: "
+            expect(same, ("pd: slot loads its converted values: "
                           + bank->name(slot)).c_str());
         }
     }

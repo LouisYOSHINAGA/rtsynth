@@ -7,7 +7,12 @@ VST3 build is already in rtsynth's parameter order — the conversion is a
 container unwrap, not a remapping.
 
 Usage:
-    tools/vstpreset_to_header.py presets/cz101 src/synth/PdFactoryPresets.hpp
+    tools/vstpreset_to_header.py src/synth/PdPresets.hpp \
+        Factory=presets/cz101 User=presets/user
+
+Each <Name>=<dir> becomes one table in the header (k<Name> and
+k<Name>Count), in the order given — the instrument registers them in that
+order, so the user slots stay at the end of the bank.
 
 Preset order and display names come from the file names, which look like
 cz101_07_harpsichord.vstpreset -> slot 7, "Harpsichord".
@@ -75,34 +80,43 @@ def slot_number(stem):
     return int(match.group(1)) if match else 0
 
 
-def main(argv):
-    if len(argv) != 3:
-        print(__doc__)
-        return 2
-    source_dir, out_path = argv[1], argv[2]
-
+def read_group(source_dir):
+    """Every preset in one directory, in file-name order."""
     files = sorted((f for f in os.listdir(source_dir) if f.endswith('.vstpreset')),
                    key=lambda f: (slot_number(os.path.splitext(f)[0]), f))
     if not files:
-        print(f'no .vstpreset files in {source_dir}')
-        return 1
-
+        raise ValueError(f'no .vstpreset files in {source_dir}')
     presets = []
-    width = None
     for name in files:
         stem = os.path.splitext(name)[0]
         values = read_values(os.path.join(source_dir, name))
-        if width is None:
-            width = len(values)
-        elif len(values) != width:
-            raise ValueError(f'{name}: {len(values)} values, expected {width}')
         presets.append((display_name(stem), stem, values))
+    return presets
+
+
+def main(argv):
+    if len(argv) < 3 or any('=' not in arg for arg in argv[2:]):
+        print(__doc__)
+        return 2
+    out_path = argv[1]
+
+    groups = []
+    width = None
+    for arg in argv[2:]:
+        group_name, source_dir = arg.split('=', 1)
+        presets = read_group(source_dir)
+        for _display, stem, values in presets:
+            if width is None:
+                width = len(values)
+            elif len(values) != width:
+                raise ValueError(f'{stem}: {len(values)} values, expected {width}')
+        groups.append((group_name, source_dir, presets))
 
     lines = [
         '// GENERATED FILE — do not edit.',
         '//',
-        '// Built by tools/vstpreset_to_header.py from the .vstpreset files in',
-        '// presets/cz101/, which are saved straight out of the pd VST3 plugin.',
+        '// Built by tools/vstpreset_to_header.py from the .vstpreset files',
+        '// under presets/, which are saved straight out of the pd VST3 plugin.',
         '// Add or replace a preset there and re-run the tool; nothing here is',
         '// meant to be readable, and hand edits are lost on the next run.',
         '//',
@@ -115,38 +129,45 @@ def main(argv):
         '',
         f'inline constexpr int kNumValues = {width};',
         '',
-        'struct FactoryPreset {',
+        'struct Preset {',
         '    const char* name;',
         '    const double* values;  // kNumValues entries',
         '};',
         '',
     ]
 
-    for index, (name, stem, values) in enumerate(presets):
-        lines.append(f'// {stem}')
-        lines.append(f'inline constexpr double kValues{index:02d}[kNumValues] = {{')
-        for start in range(0, len(values), 6):
-            row = ', '.join(repr(v) for v in values[start:start + 6])
-            lines.append(f'    {row},')
+    for group_name, source_dir, presets in groups:
+        lines.append(f'// --- {group_name}: {source_dir} '
+                     + '-' * max(0, 46 - len(group_name) - len(source_dir)))
+        lines.append('')
+        for index, (_name, stem, values) in enumerate(presets):
+            lines.append(f'// {stem}')
+            lines.append(f'inline constexpr double k{group_name}Values'
+                         f'{index:02d}[kNumValues] = {{')
+            for start in range(0, len(values), 6):
+                row = ', '.join(repr(v) for v in values[start:start + 6])
+                lines.append(f'    {row},')
+            lines.append('};')
+            lines.append('')
+        lines.append(f'inline constexpr Preset k{group_name}[] = {{')
+        for index, (name, _stem, _values) in enumerate(presets):
+            lines.append(f'    {{"{name}", k{group_name}Values{index:02d}}},')
         lines.append('};')
+        lines.append(f'inline constexpr int k{group_name}Count ='
+                     f' static_cast<int>(sizeof(k{group_name}) / sizeof(k{group_name}[0]));')
         lines.append('')
 
-    lines.append('inline constexpr FactoryPreset kFactory[] = {')
-    for index, (name, _stem, _values) in enumerate(presets):
-        lines.append(f'    {{"{name}", kValues{index:02d}}},')
-    lines.append('};')
-    lines.append('')
-    lines.append('inline constexpr int kFactoryCount ='
-                 ' static_cast<int>(sizeof(kFactory) / sizeof(kFactory[0]));')
-    lines.append('')
     lines.append('}  // namespace rtsynth::pd_presets')
     lines.append('')
 
     with open(out_path, 'w') as out:
         out.write('\n'.join(lines))
-    print(f'{out_path}: {len(presets)} presets, {width} values each')
-    for index, (name, stem, _values) in enumerate(presets):
-        print(f'  {index:2d}  {name:<20} ({stem})')
+    print(f'{out_path}: {width} values each')
+    slot = 0
+    for group_name, _source_dir, presets in groups:
+        for name, stem, _values in presets:
+            print(f'  {slot:2d}  {name:<20} ({group_name}: {stem})')
+            slot += 1
     return 0
 
 

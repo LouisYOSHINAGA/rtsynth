@@ -1,7 +1,7 @@
 // GENERATED FILE — do not edit.
 //
-// Built by tools/vstpreset_to_header.py from the .vstpreset files in
-// presets/cz101/, which are saved straight out of the pd VST3 plugin.
+// Built by tools/vstpreset_to_header.py from the .vstpreset files
+// under presets/, which are saved straight out of the pd VST3 plugin.
 // Add or replace a preset there and re-run the tool; nothing here is
 // meant to be readable, and hand edits are lost on the next run.
 //
@@ -14,13 +14,15 @@ namespace rtsynth::pd_presets {
 
 inline constexpr int kNumValues = 116;
 
-struct FactoryPreset {
+struct Preset {
     const char* name;
     const double* values;  // kNumValues entries
 };
 
+// --- Factory: presets/cz101 --------------------------
+
 // cz101_01_brass_ens1
-inline constexpr double kValues00[kNumValues] = {
+inline constexpr double kFactoryValues00[kNumValues] = {
     0.5, 0.5049999952316284, 0.6666666865348816, 0.0, 0.49244096875190735, 0.4960629940032959,
     0.5583333373069763, 0.10236220061779022, 0.07874015718698502, 1.0, 0.6868686676025391, 0.0,
     0.0, 0.0, 0.0, 0.0, 0.0, 0.3333333432674408,
@@ -44,7 +46,7 @@ inline constexpr double kValues00[kNumValues] = {
 };
 
 // cz101_02_trumpet
-inline constexpr double kValues01[kNumValues] = {
+inline constexpr double kFactoryValues01[kNumValues] = {
     0.5, 0.5049999952316284, 1.0, 0.0, 0.49244096875190735, 0.4960629940032959,
     0.5, 0.2857142984867096, 0.07874015718698502, 0.0, 0.0, 0.0,
     0.0, 0.0, 0.0, 0.0, 0.0, 0.0,
@@ -68,7 +70,7 @@ inline constexpr double kValues01[kNumValues] = {
 };
 
 // cz101_03_violin
-inline constexpr double kValues02[kNumValues] = {
+inline constexpr double kFactoryValues02[kNumValues] = {
     0.5, 0.5049999952316284, 0.0, 0.0, 0.49244096875190735, 0.4960629940032959,
     0.5583333373069763, 0.10236220061779022, 0.375, 1.0, 0.5858585834503174, 0.0,
     0.0, 0.0, 0.0, 0.0, 0.0, 0.6060606241226196,
@@ -92,7 +94,7 @@ inline constexpr double kValues02[kNumValues] = {
 };
 
 // cz101_04_strings_ens1
-inline constexpr double kValues03[kNumValues] = {
+inline constexpr double kFactoryValues03[kNumValues] = {
     0.5, 0.5049999952316284, 0.6666666865348816, 0.0, 0.49244096875190735, 0.4960629940032959,
     0.5583333373069763, 0.10236220061779022, 0.0, 0.0, 0.0, 0.0,
     0.0, 0.0, 0.0, 0.0, 0.0, 0.0,
@@ -116,7 +118,7 @@ inline constexpr double kValues03[kNumValues] = {
 };
 
 // cz101_05_elec_piano
-inline constexpr double kValues04[kNumValues] = {
+inline constexpr double kFactoryValues04[kNumValues] = {
     0.5, 0.5049999952316284, 1.0, 0.0, 1.0, 0.9210630059242249,
     0.5233333110809326, 0.10236220061779022, 0.0, 1.0, 0.0, 0.0,
     0.0, 0.0, 0.0, 0.0, 0.0, 0.0,
@@ -140,7 +142,7 @@ inline constexpr double kValues04[kNumValues] = {
 };
 
 // cz101_06_organ
-inline constexpr double kValues05[kNumValues] = {
+inline constexpr double kFactoryValues05[kNumValues] = {
     0.5, 0.5049999952316284, 1.0, 0.0, 0.8050000071525574, 0.5010629892349243,
     0.5, 0.4285714328289032, 0.375, 1.0, 1.0, 0.0,
     0.0, 0.0, 0.0, 0.0, 0.0, 0.5757575631141663,
@@ -164,7 +166,7 @@ inline constexpr double kValues05[kNumValues] = {
 };
 
 // cz101_07_flute
-inline constexpr double kValues06[kNumValues] = {
+inline constexpr double kFactoryValues06[kNumValues] = {
     0.5, 0.5049999952316284, 0.0, 0.0, 0.5099999904632568, 0.5010629892349243,
     0.5, 0.5714285969734192, 0.0, 0.0, 0.0, 0.0,
     0.0, 0.0, 0.0, 0.0, 0.0, 0.0,
@@ -188,7 +190,7 @@ inline constexpr double kValues06[kNumValues] = {
 };
 
 // cz101_08_synth_bass
-inline constexpr double kValues07[kNumValues] = {
+inline constexpr double kFactoryValues07[kNumValues] = {
     0.5, 0.5049999952316284, 0.6666666865348816, 0.0, 0.5099999904632568, 0.5010629892349243,
     0.5, 0.1428571492433548, 0.375, 0.0, 0.0, 0.0,
     0.0, 0.0, 0.0, 0.0, 0.0, 0.0,
@@ -212,7 +214,7 @@ inline constexpr double kValues07[kNumValues] = {
 };
 
 // cz101_09_brass_ens2
-inline constexpr double kValues08[kNumValues] = {
+inline constexpr double kFactoryValues08[kNumValues] = {
     0.5, 0.5049999952316284, 0.6666666865348816, 0.0, 0.5099999904632568, 0.5010629892349243,
     0.5666666626930237, 0.0, 0.0, 0.0, 0.0, 0.0,
     0.0, 0.0, 0.0, 0.0, 0.0, 0.0,
@@ -236,7 +238,7 @@ inline constexpr double kValues08[kNumValues] = {
 };
 
 // cz101_10_vibraphone
-inline constexpr double kValues09[kNumValues] = {
+inline constexpr double kFactoryValues09[kNumValues] = {
     0.5, 0.5049999952316284, 1.0, 0.0, 0.8333333134651184, 0.5010629892349243,
     0.5, 0.0, 0.0, 0.0, 0.0, 0.0,
     0.0, 0.0, 0.0, 0.0, 0.0, 0.0,
@@ -260,7 +262,7 @@ inline constexpr double kValues09[kNumValues] = {
 };
 
 // cz101_11_crispy_xylophone
-inline constexpr double kValues10[kNumValues] = {
+inline constexpr double kFactoryValues10[kNumValues] = {
     0.5, 0.5049999952316284, 0.6666666865348816, 0.0, 0.8333333134651184, 0.7727272510528564,
     0.5, 0.1428571492433548, 0.0, 0.0, 0.0, 0.0,
     0.0, 0.0, 0.0, 0.0, 0.0, 0.0,
@@ -284,7 +286,7 @@ inline constexpr double kValues10[kNumValues] = {
 };
 
 // cz101_12_synth_strings
-inline constexpr double kValues11[kNumValues] = {
+inline constexpr double kFactoryValues11[kNumValues] = {
     0.5, 0.5049999952316284, 0.6666666865348816, 0.0, 0.5, 0.5,
     0.5833333134651184, 0.0, 0.375, 1.0, 1.0, 0.0,
     0.0, 0.0, 0.0, 0.0, 0.0, 0.6666666865348816,
@@ -308,7 +310,7 @@ inline constexpr double kValues11[kNumValues] = {
 };
 
 // cz101_13_fairy_tale
-inline constexpr double kValues12[kNumValues] = {
+inline constexpr double kFactoryValues12[kNumValues] = {
     0.5, 0.5049999952316284, 0.6666666865348816, 0.0, 0.5, 0.5,
     0.5833333134651184, 0.5714285969734192, 0.0, 0.0, 0.0, 0.0,
     0.0, 0.0, 0.0, 0.0, 0.0, 0.0,
@@ -332,7 +334,7 @@ inline constexpr double kValues12[kNumValues] = {
 };
 
 // cz101_14_accordion
-inline constexpr double kValues13[kNumValues] = {
+inline constexpr double kFactoryValues13[kNumValues] = {
     0.5, 0.5049999952316284, 0.6666666865348816, 0.0, 0.6666666865348816, 0.5,
     0.5666666626930237, 0.1428571492433548, 0.375, 1.0, 0.6868686676025391, 0.0,
     0.0, 0.0, 0.0, 0.0, 0.0, 0.3333333432674408,
@@ -356,7 +358,7 @@ inline constexpr double kValues13[kNumValues] = {
 };
 
 // cz101_15_whistle
-inline constexpr double kValues14[kNumValues] = {
+inline constexpr double kFactoryValues14[kNumValues] = {
     0.5, 0.5049999952316284, 0.0, 0.0, 0.4766666889190674, 0.5,
     0.5, 0.1428571492433548, 0.0, 1.0, 0.4040403962135315, 0.0,
     0.0, 0.0, 0.0, 0.0, 0.0, 0.6565656661987305,
@@ -380,7 +382,7 @@ inline constexpr double kValues14[kNumValues] = {
 };
 
 // cz101_16_percussion
-inline constexpr double kValues15[kNumValues] = {
+inline constexpr double kFactoryValues15[kNumValues] = {
     0.5, 0.5049999952316284, 1.0, 0.0, 0.4766666889190674, 0.5,
     0.5, 0.0, 0.0, 1.0, 1.0, 0.0,
     0.0, 0.0, 0.0, 0.0, 0.0, 0.8282828330993652,
@@ -403,25 +405,105 @@ inline constexpr double kValues15[kNumValues] = {
     0.0, 0.0,
 };
 
-inline constexpr FactoryPreset kFactory[] = {
-    {"Brass Ens 1", kValues00},
-    {"Trumpet", kValues01},
-    {"Violin", kValues02},
-    {"Strings Ens 1", kValues03},
-    {"Elec Piano", kValues04},
-    {"Organ", kValues05},
-    {"Flute", kValues06},
-    {"Synth Bass", kValues07},
-    {"Brass Ens 2", kValues08},
-    {"Vibraphone", kValues09},
-    {"Crispy Xylophone", kValues10},
-    {"Synth Strings", kValues11},
-    {"Fairy Tale", kValues12},
-    {"Accordion", kValues13},
-    {"Whistle", kValues14},
-    {"Percussion", kValues15},
+inline constexpr Preset kFactory[] = {
+    {"Brass Ens 1", kFactoryValues00},
+    {"Trumpet", kFactoryValues01},
+    {"Violin", kFactoryValues02},
+    {"Strings Ens 1", kFactoryValues03},
+    {"Elec Piano", kFactoryValues04},
+    {"Organ", kFactoryValues05},
+    {"Flute", kFactoryValues06},
+    {"Synth Bass", kFactoryValues07},
+    {"Brass Ens 2", kFactoryValues08},
+    {"Vibraphone", kFactoryValues09},
+    {"Crispy Xylophone", kFactoryValues10},
+    {"Synth Strings", kFactoryValues11},
+    {"Fairy Tale", kFactoryValues12},
+    {"Accordion", kFactoryValues13},
+    {"Whistle", kFactoryValues14},
+    {"Percussion", kFactoryValues15},
+};
+inline constexpr int kFactoryCount = static_cast<int>(sizeof(kFactory) / sizeof(kFactory[0]));
+
+// --- User: presets/user ------------------------------
+
+// init
+inline constexpr double kUserValues00[kNumValues] = {
+    0.5, 0.5049999952316284, 0.0, 0.0, 0.5, 0.5,
+    0.5, 0.0, 0.0, 0.0, 0.0, 0.0,
+    0.0, 0.0, 0.0, 0.0, 0.0, 0.0,
+    0.0, 0.0, 0.0, 0.0, 0.0, 0.0,
+    0.0, 0.0, 1.0, 0.0, 0.0, 0.0,
+    0.0, 0.0, 0.0, 0.0, 0.9090909361839294, 0.0,
+    0.0, 0.0, 0.0, 0.0, 0.0, 0.1428571492433548,
+    0.0, 1.0, 1.0, 0.0, 0.0, 0.0,
+    0.0, 0.0, 0.0, 1.0, 0.0, 0.0,
+    0.0, 0.0, 0.0, 0.0, 0.1428571492433548, 0.0,
+    0.0, 0.0, 0.0, 0.0, 0.0, 0.0,
+    0.0, 0.0, 0.0, 0.0, 0.0, 0.0,
+    0.0, 0.0, 0.0, 0.0, 0.0, 0.0,
+    0.0, 0.0, 0.0, 0.0, 0.0, 0.0,
+    0.0, 0.0, 0.0, 0.0, 0.0, 0.0,
+    0.0, 0.0, 0.0, 0.0, 0.0, 0.0,
+    0.0, 0.03000001050531864, 0.0, 0.0, 0.003232330083847046, 0.0,
+    0.0, 0.0, 0.0, 0.0, 0.0, 0.0,
+    0.0, 0.0, 0.0, 0.0, 0.0, 0.4960629940032959,
+    0.0, 0.0,
 };
 
-inline constexpr int kFactoryCount = static_cast<int>(sizeof(kFactory) / sizeof(kFactory[0]));
+// user_demo_00
+inline constexpr double kUserValues01[kNumValues] = {
+    0.5, 0.5049999952316284, 0.6666666865348816, 0.0, 0.5049999952316284, 0.5199999809265137,
+    0.7083333134651184, 0.0, 0.25, 0.0, 0.0, 0.0,
+    0.0, 0.0, 0.0, 0.0, 0.0, 0.0,
+    0.0, 0.0, 0.0, 0.0, 0.0, 0.0,
+    0.0, 0.0, 0.9000000357627869, 0.0, 0.0, 0.0,
+    0.0, 0.0, 0.0, 0.0, 0.9696969985961914, 0.0,
+    0.0, 0.0, 0.0, 0.0, 0.0, 0.1428571492433548,
+    0.0, 0.800000011920929, 0.375, 0.0, 0.0, 0.0,
+    0.0, 0.0, 0.0, 1.0, 0.0, 0.0,
+    0.0, 0.0, 0.0, 0.0, 0.1428571492433548, 0.0,
+    0.0, 0.0, 0.0, 0.0, 0.0, 0.0,
+    0.0, 0.0, 0.0, 0.0, 0.0, 0.0,
+    0.0, 0.0, 0.0, 0.0, 0.0, 0.0,
+    0.0, 0.0, 0.0, 0.0, 0.0, 0.0,
+    0.0, 0.0, 0.0, 0.0, 0.0, 0.0,
+    0.0, 0.0, 0.0, 0.0, 0.0, 0.0,
+    0.0, 0.03000001050531864, 0.0, 0.0, 0.003232330083847046, 0.0,
+    0.0, 0.0, 0.0, 0.0, 0.0, 0.0,
+    0.0, 0.0, 0.0, 0.0, 0.0, 0.4960629940032959,
+    0.0, 0.0,
+};
+
+// user_demo_01
+inline constexpr double kUserValues02[kNumValues] = {
+    0.5, 0.5049999952316284, 1.0, 0.0, 0.6166666746139526, 0.5,
+    0.6500000357627869, 0.0, 0.25, 0.0, 0.0, 0.0,
+    0.0, 0.0, 0.0, 0.0, 0.0, 0.0,
+    0.0, 0.0, 0.0, 0.0, 0.0, 0.0,
+    0.0, 0.0, 1.0, 0.8999999761581421, 0.7299999594688416, 0.7550000548362732,
+    0.22500000894069672, 0.0, 0.0, 0.0, 0.904411792755127, 0.5220588445663452,
+    0.845588207244873, 0.9632353186607361, 0.0, 0.0, 0.0, 0.5714285969734192,
+    0.5, 1.0, 0.36000001430511475, 0.0, 0.0, 0.0,
+    0.0, 0.0, 0.0, 1.0, 0.0, 0.0,
+    0.0, 0.0, 0.0, 0.0, 0.1428571492433548, 0.0,
+    0.2857142984867096, 0.75, 0.0, 0.0, 0.0, 0.0,
+    0.0, 0.0, 0.0, 0.0, 0.0, 0.0,
+    0.0, 0.0, 0.0, 0.0, 0.0, 0.0,
+    0.0, 0.8400000333786011, 0.7199999690055847, 0.7849999666213989, 0.0, 0.0,
+    0.0, 0.0, 0.0, 0.5367647409439087, 0.7720588445663452, 0.43382352590560913,
+    0.0, 0.0, 0.0, 0.0, 0.4285714328289032, 0.3333333432674408,
+    0.6349999904632568, 0.5, 0.0, 0.0, 0.003232330083847046, 0.0,
+    0.0, 0.0, 0.8602941036224365, 0.0, 0.0, 0.0,
+    0.0, 0.0, 0.0, 0.1428571492433548, 0.0, 0.4960629940032959,
+    0.0, 0.0,
+};
+
+inline constexpr Preset kUser[] = {
+    {"Init", kUserValues00},
+    {"User Demo 00", kUserValues01},
+    {"User Demo 01", kUserValues02},
+};
+inline constexpr int kUserCount = static_cast<int>(sizeof(kUser) / sizeof(kUser[0]));
 
 }  // namespace rtsynth::pd_presets

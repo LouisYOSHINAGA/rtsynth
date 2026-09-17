@@ -506,8 +506,8 @@ Program Change の値（0 始まり）です。
 ```
 
 バンクは 19 スロット（ファクトリ 16 + ユーザ 3）です。ファクトリ音色は
-**CZ-101 のプリセットを pd プラグインで再現したもの**で、その `.vstpreset` ファイルから
-変換しています（[2.4](#24-pd-シンセの取り込み方)）。
+**CZ-101 のプリセットを pd プラグインで再現したもの**で、ユーザ領域と合わせて
+すべて `.vstpreset` ファイルから変換しています（[2.4](#24-pd-シンセの取り込み方)）。
 
 | # | 音色 | # | 音色 |
 |---|---|---|---|
@@ -519,7 +519,7 @@ Program Change の値（0 始まり）です。
 | 5 | Organ | 13 | Accordion |
 | 6 | Flute | 14 | Whistle |
 | 7 | Synth Bass | 15 | Percussion |
-| | | **16–18** | **`Init` / `User Demo 1` / `User Demo 2`**（編集用の空きスロット。中身は素の初期値のみ） |
+| | | **16–18** | **`Init` / `User Demo 00` / `User Demo 01`**（編集用スロット。`presets/user/` の 3 ファイル） |
 
 ユーザスロットが末尾なのは、**ファクトリ音色を足してもユーザスロットの
 Program Change 番号が動かない**ようにするためです。プリセット名は LCD に
@@ -708,19 +708,27 @@ pd を更新するときは `cd external/pd && git pull` 後に rtsynth 側を�
 **既に rtsynth のパラメータ順**になっており、変換はコンテナを剥がすだけです。
 
 ```
-presets/cz101/*.vstpreset          プラグインで保存した元データ（リポジトリに同梱）
+presets/cz101/*.vstpreset     ファクトリ音色（プラグインで保存した元データ）
+presets/user/*.vstpreset      ユーザ領域の初期内容
   ↓ tools/vstpreset_to_header.py
-src/synth/PdFactoryPresets.hpp     生成物。手で編集しない
+src/synth/PdPresets.hpp       生成物。手で編集しない
 ```
+
+ユーザ領域を**バンクの末尾**に登録するので、ファクトリ音色を足しても
+ユーザスロットの Program Change 番号は動きません。
 
 音色を追加・差し替えるには:
 
 ```sh
-# 1. pd プラグイン側で音を作り、cz101_NN_<name>.vstpreset として保存
-# 2. presets/cz101/ に置く（ファイル名の NN が並び順、<name> が表示名になる）
-cp ~/…/cz101_17_organ.vstpreset presets/cz101/
+# 1. pd プラグイン側で音を作り、<name>.vstpreset として保存
+# 2. presets/cz101/ か presets/user/ に置く
+#    ファイル名がそのまま並び順と表示名になる:
+#      cz101_17_organ2.vstpreset -> 17 番目、"Organ 2"
+#      user_demo_02.vstpreset    -> "User Demo 02"
+cp ~/…/cz101_17_organ2.vstpreset presets/cz101/
 # 3. 再生成してビルド
-python3 tools/vstpreset_to_header.py presets/cz101 src/synth/PdFactoryPresets.hpp
+python3 tools/vstpreset_to_header.py src/synth/PdPresets.hpp \
+    Factory=presets/cz101 User=presets/user
 cmake --build build -j4
 ```
 

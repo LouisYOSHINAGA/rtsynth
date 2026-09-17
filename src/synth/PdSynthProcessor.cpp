@@ -2,7 +2,7 @@
 #include <cmath>
 #include <cstdio>
 
-#include "PdFactoryPresets.hpp"
+#include "PdPresets.hpp"
 #include "PdSynthProcessor.hpp"
 
 namespace rtsynth {
@@ -253,38 +253,29 @@ void PdSynthProcessor::registerParameters(){
     }
 }
 
-// The bank. Slots 0..n are the CZ-101 factory sounds, converted straight
-// from the pd plugin's own .vstpreset files (see PdFactoryPresets.hpp and
+// The bank: the CZ-101 factory sounds, then the user slots. Both come
+// from the pd plugin's own .vstpreset files (see PdPresets.hpp and
 // tools/vstpreset_to_header.py) — the plugin and this instrument share
 // pd's ParamId enumeration, so a preset saved there is already in this
 // parameter order.
 //
-// The user slots come last and hold nothing but the parameter defaults:
-// they are the ones to edit and overwrite, and keeping them at the end
-// means adding factory sounds never moves their Program Change numbers.
+// The user slots come last so that adding factory sounds never moves
+// their Program Change numbers.
 void PdSynthProcessor::registerFactoryPresets(){
-    static constexpr const char* kUserSlotNames[] = {
-        "Init", "User Demo 1", "User Demo 2",
-    };
-
     static_assert(pd_presets::kNumValues == kNumPdParams,
                   "the generated bank was built for a different parameter set — "
                   "re-run tools/vstpreset_to_header.py");
 
-    for(int i = 0; i < pd_presets::kFactoryCount; i++){
-        const pd_presets::FactoryPreset& preset = pd_presets::kFactory[i];
-        for(int paramId = 0; paramId < kNumPdParams; paramId++){
-            paramHandles_[paramId]->set(static_cast<float>(preset.values[paramId]));
+    auto addGroup = [this](const pd_presets::Preset* presets, int count){
+        for(int i = 0; i < count; i++){
+            for(int paramId = 0; paramId < kNumPdParams; paramId++){
+                paramHandles_[paramId]->set(static_cast<float>(presets[i].values[paramId]));
+            }
+            presets_.add(presets[i].name);
         }
-        presets_.add(preset.name);
-    }
-
-    for(const char* name : kUserSlotNames){
-        for(int paramId = 0; paramId < kNumPdParams; paramId++){
-            paramHandles_[paramId]->set(static_cast<float>(defaultParamValue(paramId)));
-        }
-        presets_.add(name);
-    }
+    };
+    addGroup(pd_presets::kFactory, pd_presets::kFactoryCount);
+    addGroup(pd_presets::kUser, pd_presets::kUserCount);
 
     presets_.loadCurrent();  // start on slot 0, whatever the last one written was
 }
