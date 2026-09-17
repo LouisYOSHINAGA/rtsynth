@@ -2,6 +2,7 @@
 #include <cmath>
 #include <cstdio>
 
+#include "PdFactoryPresets.hpp"
 #include "PdSynthProcessor.hpp"
 
 namespace rtsynth {
@@ -248,107 +249,39 @@ void PdSynthProcessor::registerParameters(){
     }
 }
 
-// The factory bank. Slot 0 is the init patch (the parameter defaults); the
-// rest are sparse overrides on top of it, which keeps a patch readable as
-// "what makes this sound different" instead of 118 numbers.
+// The bank. Slots 0..n are the CZ-101 factory sounds, converted straight
+// from the pd plugin's own .vstpreset files (see PdFactoryPresets.hpp and
+// tools/vstpreset_to_header.py) — the plugin and this instrument share
+// pd's ParamId enumeration, so a preset saved there is already in this
+// parameter order.
+//
+// The user slots come last and hold nothing but the parameter defaults:
+// they are the ones to edit and overwrite, and keeping them at the end
+// means adding factory sounds never moves their Program Change numbers.
 void PdSynthProcessor::registerFactoryPresets(){
-    struct Override {
-        int paramId;
-        double value;
-    };
-    struct FactoryPreset {
-        const char* name;
-        std::vector<Override> overrides;
+    static constexpr const char* kUserSlotNames[] = {
+        "Init", "User Demo 1", "User Demo 2",
     };
 
-    // helpers, all in normalized [0,1] as the plugin's parameters are
-    auto wave1 = [](int line, int waveform){
-        return Override{lineParam(line, kLineParamWaveformFirst),
-                        optionValue(waveform, static_cast<int>(Waveform::kNumWaveforms))};
-    };
-    auto rate = [](int line, int eg, int step, double seconds){
-        return Override{egParam(line, eg, kEgParamRate0 + step), rateForSeconds(seconds)};
-    };
-    auto level = [](int line, int eg, int step, double value){
-        return Override{egParam(line, eg, kEgParamLevel0 + step), value};
-    };
-    // sustain: 0 = off (the EG runs straight through), n = hold at step n
-    auto sustain = [](int line, int eg, int step){
-        return Override{egParam(line, eg, kEgParamSustainPoint),
-                        optionValue(step, kNumEgSustainPointOptions)};
-    };
-    // end: the step the EG finishes on, numbered as pd's editor does
-    // (2 = the default, i.e. attack then release)
-    auto end = [](int line, int eg, int step){
-        return Override{egParam(line, eg, kEgParamEndPoint),
-                        optionValue(step - 2, kNumEgEndPointOptions)};
-    };
+    static_assert(pd_presets::kNumValues == kNumPdParams,
+                  "the generated bank was built for a different parameter set — "
+                  "re-run tools/vstpreset_to_header.py");
 
-    const std::vector<FactoryPreset> factory = {
-        {"Init Saw", {}},
-        {"Soft Pad", {
-            rate(0, kEgDcw, 0, 0.8), level(0, kEgDcw, 0, 0.75), rate(0, kEgDcw, 1, 0.8),
-            rate(0, kEgDca, 0, 0.5), rate(0, kEgDca, 1, 1.0),
-        }},
-        {"E.Piano", {
-            wave1(0, 4),  // saw pulse
-            rate(0, kEgDcw, 0, 0.0), level(0, kEgDcw, 0, 0.9),
-            rate(0, kEgDcw, 1, 0.6), sustain(0, kEgDcw, 0),
-            rate(0, kEgDca, 0, 0.0), rate(0, kEgDca, 1, 0.75), sustain(0, kEgDca, 0),
-        }},
-        {"Brass", {
-            rate(0, kEgDcw, 0, 0.1), level(0, kEgDcw, 0, 0.9), rate(0, kEgDcw, 1, 0.2),
-            rate(0, kEgDca, 0, 0.025), rate(0, kEgDca, 1, 0.2),
-        }},
-        {"Reso Sweep", {
-            wave1(0, 5),  // resonance I saw tooth
-            rate(0, kEgDcw, 0, 1.5), level(0, kEgDcw, 0, 1.0), rate(0, kEgDcw, 1, 0.5),
-            rate(0, kEgDca, 0, 0.0), rate(0, kEgDca, 1, 0.2),
-        }},
-        {"Bell", {
-            wave1(0, 3),  // double sine
-            {kParamLineSelect, optionValue(2, static_cast<int>(LineSelect::kNumLineSelects))},
-            {kParamDetuneFine, optionValue(kDetuneFineRange + 6, 2 * kDetuneFineRange + 1)},
-            rate(0, kEgDcw, 0, 0.0), level(0, kEgDcw, 0, 0.85),
-            rate(0, kEgDcw, 1, 0.8), sustain(0, kEgDcw, 0),
-            rate(0, kEgDca, 0, 0.0), rate(0, kEgDca, 1, 1.0), sustain(0, kEgDca, 0),
-        }},
-        {"Mono Bass", {
-            {kParamMonoPoly, 1.0},
-            wave1(0, 2),  // pulse
-            // two-stage DCW: bright attack, decay to a darker sustain
-            rate(0, kEgDcw, 0, 0.0), level(0, kEgDcw, 0, 0.9),
-            rate(0, kEgDcw, 1, 0.2), level(0, kEgDcw, 1, 0.35),
-            sustain(0, kEgDcw, 2), end(0, kEgDcw, 3), rate(0, kEgDcw, 2, 0.05),
-            rate(0, kEgDca, 0, 0.0), rate(0, kEgDca, 1, 0.05),
-        }},
-        {"Dual Detune", {
-            {kParamLineSelect, optionValue(3, static_cast<int>(LineSelect::kNumLineSelects))},
-            {kParamDetuneFine, optionValue(kDetuneFineRange + 12, 2 * kDetuneFineRange + 1)},
-            wave1(1, 1),  // line 2 = square
-            rate(0, kEgDca, 0, 0.05), rate(0, kEgDca, 1, 0.4),
-            rate(1, kEgDca, 0, 0.05), rate(1, kEgDca, 1, 0.4),
-        }},
-        // Slots to edit and keep: bare defaults, no overrides, so they are
-        // a starting point rather than someone else's sound. Edits to any
-        // slot survive switching away and back (PresetBank stores on the
-        // way out); these are simply the ones nothing is lost by
-        // overwriting. They are last so the factory sounds keep their
-        // Program Change numbers when more are added.
-        {"User 1", {}},
-        {"User 2", {}},
-        {"User 3", {}},
-    };
-
-    for(const FactoryPreset& preset : factory){
+    for(int i = 0; i < pd_presets::kFactoryCount; i++){
+        const pd_presets::FactoryPreset& preset = pd_presets::kFactory[i];
         for(int paramId = 0; paramId < kNumPdParams; paramId++){
-            paramHandles_[paramId]->set(static_cast<float>(defaultParamValue(paramId)));
-        }
-        for(const Override& item : preset.overrides){
-            paramHandles_[item.paramId]->set(static_cast<float>(item.value));
+            paramHandles_[paramId]->set(static_cast<float>(preset.values[paramId]));
         }
         presets_.add(preset.name);
     }
+
+    for(const char* name : kUserSlotNames){
+        for(int paramId = 0; paramId < kNumPdParams; paramId++){
+            paramHandles_[paramId]->set(static_cast<float>(defaultParamValue(paramId)));
+        }
+        presets_.add(name);
+    }
+
     presets_.loadCurrent();  // start on slot 0, whatever the last one written was
 }
 

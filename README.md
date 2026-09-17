@@ -495,30 +495,26 @@ LCD は溢れた分を黙って切り捨ててしまうため、全パラメー�
 
 ## 1.8 プリセット（Program Change）
 
-pd 音源は 11 個のプリセット（ファクトリ 8 + ユーザ 3）を持ち、**MIDI Program Change**
-または**パネルボタン**（[1.6](#16-物理コントロールツマミエンコーダ)）で切り替えられます。
-番号はそのまま Program Change の値（0 始まり）です。
+pd 音源はプリセットバンクを持ち、**MIDI Program Change** または**パネルボタン**
+（[1.6](#16-物理コントロールツマミエンコーダ)）で切り替えられます。番号はそのまま
+Program Change の値（0 始まり）です。
 
 ```sh
-./build/rtsynth --synth pd --list-presets   # 一覧
-./build/rtsynth --synth pd --preset 6       # Mono Bass で起動
+./build/rtsynth --synth pd --list-presets   # 現在の一覧（これが正）
+./build/rtsynth --synth pd --preset 3       # 3 番で起動
 ./build/rtsynth --synth pd --button 5=preset-prev --button 6=preset-next
 ```
 
-| # | 名前 | 概要 |
-|---|---|---|
-| 0 | Init Saw | 初期パッチ（ノコギリ波・高速アタック・DCW スイープ） |
-| 1 | Soft Pad | 遅いアタックとリリースのパッド |
-| 2 | E.Piano | 減衰系（サステインなし）、Saw Pulse |
-| 3 | Brass | DCW がやや遅れて立ち上がるブラス |
-| 4 | Reso Sweep | Reso I Saw 波形＋1.5 秒の DCW スイープ |
-| 5 | Bell | 1+1' デチューンの減衰ベル |
-| 6 | Mono Bass | Mono（SOLO）、2 段 DCW の短いベース |
-| 7 | Dual Detune | 1+2'（Line1 ノコギリ＋Line2 矩形）のデチューン |
-| 8–10 | User 1–3 | **編集用の空きスロット**。中身は素の初期値のみ（= Init Saw と同じ） |
+バンクの構成:
 
-ユーザスロットを末尾に置いてあるのは、今後ファクトリ音色を足してもユーザスロットの
-Program Change 番号が動かないようにするためです。
+| # | 内容 |
+|---|---|
+| 先頭から | **CZ-101 ファクトリ音色**。pd プラグインの `.vstpreset` ファイルから変換したもの（[2.4](#24-pd-シンセの取り込み方)） |
+| 末尾 3 つ | `Init` / `User Demo 1` / `User Demo 2` — **編集用の空きスロット**。中身は素の初期値のみ |
+
+ユーザスロットが末尾なのは、**ファクトリ音色を足してもユーザスロットの
+Program Change 番号が動かない**ようにするためです。プリセット名は LCD に
+そのまま出るので、16 桁に収まる長さにしてあります。
 
 **編集とプリセットの関係**（`src/core/PresetBank.hpp`）:
 
@@ -689,6 +685,34 @@ pd の DSP コア（`pd.{h,cpp}` / `eg.{h,cpp}` / `voice.{h,cpp}` / `const.h`）
 
 pd を更新するときは `cd external/pd && git pull` 後に rtsynth 側をコミットしてください
 （サブモジュールは特定コミットに固定されます）。
+
+### プリセットは `.vstpreset` から生成する
+
+ファクトリ音色は手書きではなく、**pd プラグインで作って保存した `.vstpreset` を
+そのまま変換**しています。プラグインと rtsynth は pd の `ParamId` 列挙を共有している
+（`kNumPdParams` は `Steinberg::Vst::kNumParams` そのもの）ため、保存されたプリセットは
+**既に rtsynth のパラメータ順**になっており、変換はコンテナを剥がすだけです。
+
+```
+presets/cz101/*.vstpreset          プラグインで保存した元データ（リポジトリに同梱）
+  ↓ tools/vstpreset_to_header.py
+src/synth/PdFactoryPresets.hpp     生成物。手で編集しない
+```
+
+音色を追加・差し替えるには:
+
+```sh
+# 1. pd プラグイン側で音を作り、cz101_NN_<name>.vstpreset として保存
+# 2. presets/cz101/ に置く（ファイル名の NN が並び順、<name> が表示名になる）
+cp ~/…/cz101_17_organ.vstpreset presets/cz101/
+# 3. 再生成してビルド
+python3 tools/vstpreset_to_header.py presets/cz101 src/synth/PdFactoryPresets.hpp
+cmake --build build -j4
+```
+
+`.vstpreset` の `Comp` チャンクは `int32 のバージョン + パラメータ数ぶんの double`
+（`PDProcessor::getState`）です。バージョンが合わない場合は変換ツールが止まるので、
+その場合は現行プラグインで保存し直してください。
 
 **サブモジュール更新時の落とし穴**: pd 側で `ParamId` に列挙子が追加されると `kNumParams`
 が増えます。`PdSynthProcessor` はこの数だけ `Parameter` ハンドルの配列を持つため、
