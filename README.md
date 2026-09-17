@@ -505,12 +505,21 @@ Program Change の値（0 始まり）です。
 ./build/rtsynth --synth pd --button 5=preset-prev --button 6=preset-next
 ```
 
-バンクの構成:
+バンクは 19 スロット（ファクトリ 16 + ユーザ 3）です。ファクトリ音色は
+**CZ-101 のプリセットを pd プラグインで再現したもの**で、その `.vstpreset` ファイルから
+変換しています（[2.4](#24-pd-シンセの取り込み方)）。
 
-| # | 内容 |
-|---|---|
-| 先頭から | **CZ-101 ファクトリ音色**。pd プラグインの `.vstpreset` ファイルから変換したもの（[2.4](#24-pd-シンセの取り込み方)） |
-| 末尾 3 つ | `Init` / `User Demo 1` / `User Demo 2` — **編集用の空きスロット**。中身は素の初期値のみ |
+| # | 音色 | # | 音色 |
+|---|---|---|---|
+| 0 | Brass Ens 1 | 8 | Brass Ens 2 |
+| 1 | Trumpet | 9 | Vibraphone |
+| 2 | Violin | 10 | Crispy Xylophone |
+| 3 | Strings Ens 1 | 11 | Synth Strings |
+| 4 | Elec Piano | 12 | Fairy Tale |
+| 5 | Organ | 13 | Accordion |
+| 6 | Flute | 14 | Whistle |
+| 7 | Synth Bass | 15 | Percussion |
+| | | **16–18** | **`Init` / `User Demo 1` / `User Demo 2`**（編集用の空きスロット。中身は素の初期値のみ） |
 
 ユーザスロットが末尾なのは、**ファクトリ音色を足してもユーザスロットの
 Program Change 番号が動かない**ようにするためです。プリセット名は LCD に

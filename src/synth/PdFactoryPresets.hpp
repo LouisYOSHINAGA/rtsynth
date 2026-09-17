@@ -379,6 +379,30 @@ inline constexpr double kValues14[kNumValues] = {
     0.0, 0.0,
 };
 
+// cz101_16_percussion
+inline constexpr double kValues15[kNumValues] = {
+    0.5, 0.5049999952316284, 1.0, 0.0, 0.4766666889190674, 0.5,
+    0.5, 0.0, 0.0, 1.0, 1.0, 0.0,
+    0.0, 0.0, 0.0, 0.0, 0.0, 0.8282828330993652,
+    0.0, 0.0, 0.0, 0.0, 0.0, 0.0,
+    0.0, 0.0, 1.0, 0.28282827138900757, 0.0, 0.0,
+    0.0, 0.0, 0.0, 0.0, 1.0, 0.0,
+    0.0, 0.0, 0.0, 0.0, 0.0, 0.0,
+    0.0, 1.0, 1.0, 0.0, 0.0, 0.0,
+    0.0, 0.0, 0.0, 1.0, 0.0, 0.0,
+    0.0, 0.0, 0.0, 0.0, 0.0, 0.0,
+    0.0, 0.0, 1.0, 0.0, 0.0, 0.0,
+    0.0, 0.0, 0.0, 0.0, 0.0, 0.0,
+    0.0, 0.0, 0.0, 0.0, 0.0, 0.0,
+    0.0, 1.0, 0.0, 0.0, 0.0, 0.0,
+    0.0, 0.0, 0.0, 0.0, 0.0, 0.0,
+    0.0, 0.0, 0.0, 0.0, 0.0, 0.0,
+    1.0, 0.5858585834503174, 0.0, 0.0, 0.003232330083847046, 0.0,
+    0.0, 0.0, 1.0, 0.0, 0.0, 0.0,
+    0.0, 0.0, 0.0, 0.0, 0.0, 0.4960629940032959,
+    0.0, 0.0,
+};
+
 inline constexpr FactoryPreset kFactory[] = {
     {"Brass Ens 1", kValues00},
     {"Trumpet", kValues01},
@@ -395,6 +419,7 @@ inline constexpr FactoryPreset kFactory[] = {
     {"Fairy Tale", kValues12},
     {"Accordion", kValues13},
     {"Whistle", kValues14},
+    {"Percussion", kValues15},
 };
 
 inline constexpr int kFactoryCount = static_cast<int>(sizeof(kFactory) / sizeof(kFactory[0]));
