@@ -287,9 +287,13 @@ void PdSynthProcessor::registerFactoryPresets(){
 
 void PdSynthProcessor::prepare(double sampleRate, int maxBlockSize){
     monoScratch_.assign(static_cast<size_t>(maxBlockSize), 0.0f);
-    for(PdVoice& voice : voices_){
-        voice.setSampleRate(sampleRate);
-    }
+    // The voices have no sample rate of their own: pd runs them at
+    // kInternalSampleRate and the host converts (PDProcessor does the same
+    // in setupProcessing).
+    internalTickStep_ = kInternalSampleRate / sampleRate;
+    resamplePhase_ = 1.0;
+    prevTickSample_ = 0.0;
+    currTickSample_ = 0.0;
     volumeSmoother_.prepare(sampleRate, 0.005f);
     volumeSmoother_.snap(static_cast<float>(volume_));
 }
@@ -620,17 +624,37 @@ void PdSynthProcessor::handleEvent(const MidiEvent& event){
     }
 }
 
+double PdSynthProcessor::generateTick(){
+    double mixed = 0.0;
+    for(int v = 0; v < voiceLimit_; v++){
+        PdVoice& voice = voices_[static_cast<size_t>(v)];
+        if(voice.isActive()){
+            mixed += voice.generate(pitchBend_);
+        }
+    }
+    // pd applies volume here too; this host smooths it at the output rate
+    // instead (see process), so a tick is the bare voice mix.
+    return kVoiceMixGain * mixed;
+}
+
+double PdSynthProcessor::resample(){
+    // Linear interpolation between engine ticks. At 44.1 kHz out the step
+    // is exactly 1.0 and this degenerates to one tick per sample.
+    while(resamplePhase_ >= 1.0){
+        prevTickSample_ = currTickSample_;
+        currTickSample_ = generateTick();
+        resamplePhase_ -= 1.0;
+    }
+    const double value = prevTickSample_
+                       + (currTickSample_ - prevTickSample_) * resamplePhase_;
+    resamplePhase_ += internalTickStep_;
+    return value;
+}
+
 void PdSynthProcessor::renderSegment(int startFrame, int numFrames){
     for(int i = 0; i < numFrames; i++){
-        double mixed = 0.0;
-        for(int v = 0; v < voiceLimit_; v++){
-            PdVoice& voice = voices_[static_cast<size_t>(v)];
-            if(voice.isActive()){
-                mixed += voice.generate(pitchBend_);
-            }
-        }
         monoScratch_[static_cast<size_t>(startFrame + i)] =
-            static_cast<float>(kVoiceMixGain * mixed);
+            static_cast<float>(resample());
     }
 }
 

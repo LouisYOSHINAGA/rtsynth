@@ -112,6 +112,10 @@ private:
 
     void handleEvent(const MidiEvent& event);
     void renderSegment(int startFrame, int numFrames);
+    // one internal-rate tick: every active voice mixed, before volume
+    double generateTick();
+    // one output-rate sample, interpolated between internal-rate ticks
+    double resample();
 
     void onNoteOn(int channel, int note);
     void onNoteOff(int channel, int note);
@@ -126,6 +130,16 @@ private:
     PresetBank presets_{parameters_};
     std::vector<HeldNote> heldNotes_;   // mono (SOLO) mode, capacity reserved
     std::vector<float> monoScratch_;
+
+    // Resampler, mirroring PDProcessor's. pd's engine ticks at a fixed
+    // kInternalSampleRate (the real CZ's internal clock) whatever the
+    // output rate is, so the host side has to interpolate between ticks —
+    // without this the pitch would be off by the ratio of the two rates.
+    // resamplePhase_ starts at 1.0 so the first output sample ticks.
+    double internalTickStep_ = 1.0;
+    double resamplePhase_ = 1.0;
+    double prevTickSample_ = 0.0;
+    double currTickSample_ = 0.0;
     SmoothedValue volumeSmoother_;
 
     double pitchBend_ = 0.0;            // [-1, 1], scaled inside Voice
