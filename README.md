@@ -733,8 +733,17 @@ cmake --build build -j4
 ```
 
 `.vstpreset` の `Comp` チャンクは `int32 のバージョン + パラメータ数ぶんの double`
-（`PDProcessor::getState`）です。バージョンが合わない場合は変換ツールが止まるので、
-その場合は現行プラグインで保存し直してください。
+（`PDProcessor::getState`）です。**pd はパラメータを末尾に追加していくだけ**なので、
+古いプラグインで保存したプリセットは単に値の個数が少なくなります。その場合、
+**足りないぶんは音源側の既定値**が入ります（pd 自身の `setState` と同じ挙動）。
+変換ツールはバージョンを見ずに値の個数だけを見るので、新旧のプリセットを混在させても
+そのまま動きます。
+
+逆に、**プリセットの方が `external/pd` より新しい**（サブモジュールを更新せずに
+新しいプラグインのプリセットを変換した）場合は、ビルド時に
+`the generated bank carries more parameters than this build of pd has`
+という static_assert で止まります。`git submodule update --remote external/pd` して
+ビルドし直してください。
 
 **サブモジュール更新時の落とし穴**: pd 側で `ParamId` に列挙子が追加されると `kNumParams`
 が増えます。`PdSynthProcessor` はこの数だけ `Parameter` ハンドルの配列を持つため、

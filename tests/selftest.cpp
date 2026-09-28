@@ -648,21 +648,31 @@ int main(){
         }
         expect(tailMatches, "pd: the user slots sit at the end of the bank");
 
-        // every slot must load exactly what was generated for it: this is
-        // what says the .vstpreset conversion reaches the parameters
+        // Every slot must load exactly what was generated for it — this is
+        // what says the .vstpreset conversion reaches the parameters at
+        // all. A preset saved before a parameter existed stops short of it,
+        // and the rest must come from the defaults.
         for(int slot = 0; slot < bank->count(); slot++){
             const pd_presets::Preset& source =
                 (slot < firstUser)? pd_presets::kFactory[slot]
                                   : pd_presets::kUser[slot - firstUser];
             bank->select(slot);
-            bool same = true;
+            bool stored = true;
+            bool defaulted = true;
             int index = 0;
             for(auto& parameter : pd.parameters()){
-                same = same
-                    && parameter->get() == static_cast<float>(source.values[index++]);
+                if(index < source.count){
+                    stored = stored
+                        && parameter->get() == static_cast<float>(source.values[index]);
+                }else{
+                    defaulted = defaulted && parameter->get() == parameter->defaultValue();
+                }
+                index++;
             }
-            expect(same, ("pd: slot loads its converted values: "
-                          + bank->name(slot)).c_str());
+            expect(stored, ("pd: slot loads its converted values: "
+                            + bank->name(slot)).c_str());
+            expect(defaulted, ("pd: parameters newer than the preset take their "
+                               "default: " + bank->name(slot)).c_str());
         }
     }
 

@@ -23,8 +23,11 @@ import struct
 import sys
 
 # The plugin's component state: int32 version, then one double per
-# parameter (PDProcessor::getState).
-STATE_VERSION_WITH_ALL_PARAMS = 3
+# parameter (PDProcessor::getState). Parameters are only ever appended, so
+# the count is what the version means and the file carries it either way —
+# this tool does not need to know the versions at all. A preset saved by an
+# older plugin simply holds fewer values, and the instrument fills the rest
+# from its defaults, which is what pd's own setState does.
 
 
 def read_component_chunk(path):
@@ -49,14 +52,15 @@ def read_component_chunk(path):
 def read_values(path):
     chunk = read_component_chunk(path)
     version, = struct.unpack_from('<i', chunk, 0)
-    if version != STATE_VERSION_WITH_ALL_PARAMS:
-        raise ValueError(f'{path}: state version {version}, expected '
-                         f'{STATE_VERSION_WITH_ALL_PARAMS} — re-save it from '
-                         f'the current plugin')
+    if version < 1:
+        raise ValueError(f'{path}: state version {version} is not a preset '
+                         f'this plugin wrote')
     body = chunk[4:]
     if len(body) % 8 != 0:
         raise ValueError(f'{path}: {len(body)} bytes is not whole doubles')
-    return list(struct.unpack(f'<{len(body) // 8}d', body))
+    if not body:
+        raise ValueError(f'{path}: no parameter values')
+    return version, list(struct.unpack(f'<{len(body) // 8}d', body))
 
 
 def display_name(stem):
@@ -89,8 +93,8 @@ def read_group(source_dir):
     presets = []
     for name in files:
         stem = os.path.splitext(name)[0]
-        values = read_values(os.path.join(source_dir, name))
-        presets.append((display_name(stem), stem, values))
+        version, values = read_values(os.path.join(source_dir, name))
+        presets.append((display_name(stem), stem, version, values))
     return presets
 
 
@@ -101,15 +105,12 @@ def main(argv):
     out_path = argv[1]
 
     groups = []
-    width = None
+    widest = 0
     for arg in argv[2:]:
         group_name, source_dir = arg.split('=', 1)
         presets = read_group(source_dir)
-        for _display, stem, values in presets:
-            if width is None:
-                width = len(values)
-            elif len(values) != width:
-                raise ValueError(f'{stem}: {len(values)} values, expected {width}')
+        for _display, _stem, _version, values in presets:
+            widest = max(widest, len(values))
         groups.append((group_name, source_dir, presets))
 
     lines = [
@@ -121,17 +122,20 @@ def main(argv):
         '// meant to be readable, and hand edits are lost on the next run.',
         '//',
         '// Values are normalized [0,1], indexed by pd\'s ParamId — the same',
-        '// order PdSynthProcessor registers its parameters in.',
+        '// order PdSynthProcessor registers its parameters in. A preset may',
+        '// carry fewer than the build has (it was saved before a parameter',
+        '// was added); the instrument fills the rest from its defaults.',
         '',
         '#pragma once',
         '',
         'namespace rtsynth::pd_presets {',
         '',
-        f'inline constexpr int kNumValues = {width};',
+        f'inline constexpr int kMaxValues = {widest};',
         '',
         'struct Preset {',
         '    const char* name;',
-        '    const double* values;  // kNumValues entries',
+        '    const double* values;',
+        '    int count;  // values present; parameters past it take their default',
         '};',
         '',
     ]
@@ -140,18 +144,19 @@ def main(argv):
         lines.append(f'// --- {group_name}: {source_dir} '
                      + '-' * max(0, 46 - len(group_name) - len(source_dir)))
         lines.append('')
-        for index, (_name, stem, values) in enumerate(presets):
-            lines.append(f'// {stem}')
+        for index, (_name, stem, version, values) in enumerate(presets):
+            lines.append(f'// {stem} (state version {version})')
             lines.append(f'inline constexpr double k{group_name}Values'
-                         f'{index:02d}[kNumValues] = {{')
+                         f'{index:02d}[{len(values)}] = {{')
             for start in range(0, len(values), 6):
                 row = ', '.join(repr(v) for v in values[start:start + 6])
                 lines.append(f'    {row},')
             lines.append('};')
             lines.append('')
         lines.append(f'inline constexpr Preset k{group_name}[] = {{')
-        for index, (name, _stem, _values) in enumerate(presets):
-            lines.append(f'    {{"{name}", k{group_name}Values{index:02d}}},')
+        for index, (name, _stem, _version, values) in enumerate(presets):
+            lines.append(f'    {{"{name}", k{group_name}Values{index:02d}, '
+                         f'{len(values)}}},')
         lines.append('};')
         lines.append(f'inline constexpr int k{group_name}Count ='
                      f' static_cast<int>(sizeof(k{group_name}) / sizeof(k{group_name}[0]));')
@@ -162,11 +167,13 @@ def main(argv):
 
     with open(out_path, 'w') as out:
         out.write('\n'.join(lines))
-    print(f'{out_path}: {width} values each')
+    print(f'{out_path}: up to {widest} values per preset')
     slot = 0
     for group_name, _source_dir, presets in groups:
-        for name, stem, _values in presets:
-            print(f'  {slot:2d}  {name:<20} ({group_name}: {stem})')
+        for name, stem, version, values in presets:
+            note = '' if len(values) == widest else f'  [{len(values)} values,'\
+                                                    f' rest default]'
+            print(f'  {slot:2d}  {name:<20} ({group_name}: {stem}, v{version}){note}')
             slot += 1
     return 0
 

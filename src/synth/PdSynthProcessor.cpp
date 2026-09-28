@@ -15,6 +15,11 @@ namespace {
 // enough that a preset button still feels instant.
 constexpr double kPresetSwitchFadeSeconds = 0.005;
 
+constexpr uint8_t kCcOctaveRange = 31;
+constexpr uint8_t kCcMasterTune = 80;
+constexpr uint8_t kCcEditDcwKeyFollow = 63;
+constexpr uint8_t kCcEditDcaKeyFollow = 119;
+
 constexpr uint8_t kCcAllSoundOff = 120;
 constexpr uint8_t kCcAllNotesOff = 123;
 
@@ -147,6 +152,12 @@ std::string PdSynthProcessor::paramIdString(int paramId){
         case kParamCcEditLine:   return "cc_edit_line";
         case kParamMonoTrigger:  return "mono_trigger";
         case kParamPolyTrigger:  return "poly_trigger";
+        case kParamOctaveRange:  return "octave_range";
+        case kParamMasterTune:   return "master_tune";
+        case kParamLine1DcaKeyFollow: return "line1_dca_key_follow";
+        case kParamLine2DcaKeyFollow: return "line2_dca_key_follow";
+        case kParamLine1DcwKeyFollow: return "line1_dcw_key_follow";
+        case kParamLine2DcwKeyFollow: return "line2_dcw_key_follow";
         default:                 break;
     }
     if(kParamLine1Begin <= paramId && paramId < kParamCcEditLine){
@@ -172,6 +183,14 @@ std::string PdSynthProcessor::paramName(int paramId){
         case kParamCcEditLine:   return "CC Edit Line";
         case kParamMonoTrigger:  return "Mono Trigger";
         case kParamPolyTrigger:  return "Poly Trigger";
+        case kParamOctaveRange:  return "Octave Range";
+        case kParamMasterTune:   return "Master Tune";
+        // pd calls these "L1 DCA Key Follow"; one character shorter so the
+        // name still fits the 16-column LCD
+        case kParamLine1DcaKeyFollow: return "L1 DCA KeyFollow";
+        case kParamLine2DcaKeyFollow: return "L2 DCA KeyFollow";
+        case kParamLine1DcwKeyFollow: return "L1 DCW KeyFollow";
+        case kParamLine2DcwKeyFollow: return "L2 DCW KeyFollow";
         default:                 break;
     }
     if(paramId < kParamLine1Begin || paramId >= kParamCcEditLine){
@@ -213,6 +232,8 @@ double PdSynthProcessor::defaultParamValue(int paramId){
         case kParamDetuneOctave:  // signed parameters center on 0.5
         case kParamDetuneNote:
         case kParamDetuneFine:
+        case kParamOctaveRange:
+        case kParamMasterTune:
             return 0.5;
         default:
             break;
@@ -262,14 +283,20 @@ void PdSynthProcessor::registerParameters(){
 // The user slots come last so that adding factory sounds never moves
 // their Program Change numbers.
 void PdSynthProcessor::registerFactoryPresets(){
-    static_assert(pd_presets::kNumValues == kNumPdParams,
-                  "the generated bank was built for a different parameter set — "
-                  "re-run tools/vstpreset_to_header.py");
+    static_assert(pd_presets::kMaxValues <= kNumPdParams,
+                  "the generated bank carries more parameters than this build of "
+                  "pd has — re-run tools/vstpreset_to_header.py");
 
     auto addGroup = [this](const pd_presets::Preset* presets, int count){
         for(int i = 0; i < count; i++){
             for(int paramId = 0; paramId < kNumPdParams; paramId++){
-                paramHandles_[paramId]->set(static_cast<float>(presets[i].values[paramId]));
+                // A preset saved before a parameter existed simply stops
+                // short; the parameter takes its default, which is what
+                // pd's own setState does with an older stream.
+                const double value = (paramId < presets[i].count)
+                                   ? presets[i].values[paramId]
+                                   : defaultParamValue(paramId);
+                paramHandles_[paramId]->set(static_cast<float>(value));
             }
             presets_.add(presets[i].name);
         }
@@ -338,6 +365,28 @@ void PdSynthProcessor::applyParameter(int paramId, double value){
         for(PdVoice& voice : voices_){
             voice.setLineParam(rel / kNumLineParams, rel % kNumLineParams, value);
         }
+    }else if(paramId == kParamOctaveRange){
+        const int octave = decodeSignedOption(value, kOctaveRangeMax);
+        for(PdVoice& voice : voices_){
+            voice.setOctaveRange(octave);
+        }
+    }else if(paramId == kParamMasterTune){
+        const int cents = decodeSignedOption(value, kMasterTuneRangeCents);
+        for(PdVoice& voice : voices_){
+            voice.setMasterTune(cents);
+        }
+    }else if(paramId == kParamLine1DcaKeyFollow || paramId == kParamLine2DcaKeyFollow){
+        const auto keyFollow =
+            static_cast<Steinberg::int8>(decodeOptionIndex(value, kNumKeyFollowOptions));
+        for(PdVoice& voice : voices_){
+            voice.setDcaKeyFollow(paramId - kParamLine1DcaKeyFollow, keyFollow);
+        }
+    }else if(paramId == kParamLine1DcwKeyFollow || paramId == kParamLine2DcwKeyFollow){
+        const auto keyFollow =
+            static_cast<Steinberg::int8>(decodeOptionIndex(value, kNumKeyFollowOptions));
+        for(PdVoice& voice : voices_){
+            voice.setDcwKeyFollow(paramId - kParamLine1DcwKeyFollow, keyFollow);
+        }
     }
     // kParamCcEditLine only steers the CC routing below; kParamMonoTrigger
     // and kParamPolyTrigger exist for the plugin's IMidiMapping (one
@@ -359,13 +408,21 @@ int PdSynthProcessor::paramIdForCc(uint8_t cc) const {
         // we need (its MIDI meaning is a channel count).
         case kCcMonoModeOn:
         case kCcPolyModeOn:         return kParamMonoPoly;
+        case kCcOctaveRange:        return kParamOctaveRange;
+        case kCcMasterTune:         return kParamMasterTune;
         default:                    break;
     }
 
     // The waveform and EG controllers address whichever line CC3 selected,
     // as on hardware where the panel picks the line being edited.
-    const int lineBase = (paramHandles_[kParamCcEditLine]->get() >= 0.5f)
-                       ? kParamLine2Begin : kParamLine1Begin;
+    const bool line2 = paramHandles_[kParamCcEditLine]->get() >= 0.5f;
+    if(cc == kCcEditDcaKeyFollow){
+        return line2? kParamLine2DcaKeyFollow : kParamLine1DcaKeyFollow;
+    }
+    if(cc == kCcEditDcwKeyFollow){
+        return line2? kParamLine2DcwKeyFollow : kParamLine1DcwKeyFollow;
+    }
+    const int lineBase = line2 ? kParamLine2Begin : kParamLine1Begin;
     if(cc == kCcWaveformFirst){
         return lineBase + kLineParamWaveformFirst;
     }
@@ -424,6 +481,21 @@ std::string PdSynthProcessor::describeValue(const Parameter& parameter) const {
         case kParamDetuneNote:
             std::snprintf(text, sizeof(text), "%+d semitones",
                           decodeSignedOption(value, kDetuneNoteRange));
+            return text;
+        case kParamOctaveRange:
+            std::snprintf(text, sizeof(text), "%+d oct",
+                          decodeSignedOption(value, kOctaveRangeMax));
+            return text;
+        case kParamMasterTune:
+            std::snprintf(text, sizeof(text), "%+d cent",
+                          decodeSignedOption(value, kMasterTuneRangeCents));
+            return text;
+        case kParamLine1DcaKeyFollow:
+        case kParamLine2DcaKeyFollow:
+        case kParamLine1DcwKeyFollow:
+        case kParamLine2DcwKeyFollow:
+            std::snprintf(text, sizeof(text), "%d",
+                          decodeOptionIndex(value, kNumKeyFollowOptions));
             return text;
         case kParamDetuneFine: {
             const int steps = decodeSignedOption(value, kDetuneFineRange);
