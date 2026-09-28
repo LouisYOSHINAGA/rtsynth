@@ -165,7 +165,12 @@ def main(argv):
     lines.append('}  // namespace rtsynth::pd_presets')
     lines.append('')
 
-    with open(out_path, 'w') as out:
+    # Explicit, because Python would otherwise use the platform's default
+    # codec: on a Japanese Windows that is cp932, which cannot encode the
+    # em dash in the header comments and fails the whole run. newline fixes
+    # the line endings for the same reason — a generated file in git should
+    # not change shape with the machine that produced it.
+    with open(out_path, 'w', encoding='utf-8', newline='\n') as out:
         out.write('\n'.join(lines))
     print(f'{out_path}: up to {widest} values per preset')
     slot = 0
@@ -179,4 +184,10 @@ def main(argv):
 
 
 if __name__ == '__main__':
+    # Printing has the same problem as writing: a console in cp932 cannot
+    # render every character this script prints. Never let that be what
+    # stops a conversion.
+    for stream in (sys.stdout, sys.stderr):
+        if hasattr(stream, 'reconfigure'):
+            stream.reconfigure(encoding='utf-8', errors='replace')
     sys.exit(main(sys.argv))
