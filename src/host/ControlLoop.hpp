@@ -4,10 +4,12 @@
 #include <atomic>
 #include <chrono>
 #include <cmath>
+#include <functional>
 #include <thread>
 #include <vector>
 
 #include "../core/Parameters.hpp"
+#include "ButtonInput.hpp"
 #include "ControlInput.hpp"
 
 namespace rtsynth {
@@ -29,11 +31,35 @@ namespace rtsynth {
 //   detent step nudges the parameter by `stepSize` of its normalized
 //   range; no filtering is needed because encoders are already discrete.
 //
+// Beyond fixed knob -> parameter mappings, the loop is also the one
+// thread where panel *behaviour* runs:
+//
+//   buttons (ButtonInput): every source's queued edges are drained here
+//   and handed to its handler, so whatever a button does (send a Program
+//   Change, switch an edit page, ...) happens on this thread only.
+//
+//   surfaces (ControlSurface): logic that is more than a fixed mapping —
+//   an encoder whose target depends on which page is selected, LEDs that
+//   show the selection (see EgEditPanel). Polled once per tick, after the
+//   buttons, so a page switch applies to the very next encoder movement.
+//
+// Everything registered must outlive the loop (stop() joins the thread).
+//
 // (Per-sample smoothing against zipper noise is the Processor's job —
 // see dsp/SmoothedValue.hpp; this class only tames the control rate.)
+class ControlSurface {
+public:
+    virtual ~ControlSurface() = default;
+    // called from the ControlLoop thread on every tick
+    virtual void poll() = 0;
+};
+
 class ControlLoop {
 public:
-    // Either input may be null when that control kind is not used.
+    using ButtonHandler = std::function<void(int channel, bool pressed)>;
+
+    // Default inputs for addMapping()/addRelativeMapping(channel, ...);
+    // either may be null when that control kind is not used.
     explicit ControlLoop(ControlInput* absoluteInput = nullptr,
                          RelativeControlInput* relativeInput = nullptr)
         : absolute_(absoluteInput), relative_(relativeInput){}
@@ -48,7 +74,29 @@ public:
     // the normalized value by stepSize. Call before start().
     void addRelativeMapping(int channel, Parameter* parameter,
                             float stepSize = kDefaultStepSize){
-        relativeSlots_.push_back({channel, parameter, stepSize});
+        addRelativeMapping(relative_, channel, parameter, stepSize);
+    }
+
+    // Same, on another relative input than the default one (e.g. encoders
+    // behind an I/O expander next to the GPIO ones).
+    void addRelativeMapping(RelativeControlInput* input, int channel,
+                            Parameter* parameter, float stepSize = kDefaultStepSize){
+        relativeSlots_.push_back({input, channel, parameter, stepSize});
+    }
+
+    // Drain this source's button edges into handler, on the loop thread.
+    void addButtons(ButtonInput* input, ButtonHandler handler){
+        buttonSources_.push_back({input, std::move(handler)});
+    }
+
+    void addSurface(ControlSurface* surface){
+        surfaces_.push_back(surface);
+    }
+
+    // true when anything at all was registered, i.e. start() is worth it
+    bool hasWork() const {
+        return !absoluteSlots_.empty() || !relativeSlots_.empty()
+            || !buttonSources_.empty() || !surfaces_.empty();
     }
 
     void start(int pollRateHz = 100){
@@ -78,6 +126,10 @@ public:
     void pollOnce(){
         pollAbsolute();
         pollRelative();
+        pollButtons();
+        for(ControlSurface* surface : surfaces_){
+            surface->poll();
+        }
     }
 
 private:
@@ -94,6 +146,7 @@ private:
     };
 
     struct RelativeSlot {
+        RelativeControlInput* input;
         int channel;
         Parameter* parameter;
         float stepSize;
@@ -122,12 +175,17 @@ private:
         }
     }
 
+    struct ButtonSource {
+        ButtonInput* input;
+        ButtonHandler handler;
+    };
+
     void pollRelative(){
-        if(relative_ == nullptr){
-            return;
-        }
         for(RelativeSlot& slot : relativeSlots_){
-            const int delta = relative_->readDelta(slot.channel);
+            if(slot.input == nullptr){
+                continue;
+            }
+            const int delta = slot.input->readDelta(slot.channel);
             if(delta != 0){
                 slot.parameter->setNormalized(
                     slot.parameter->getNormalized()
@@ -136,10 +194,23 @@ private:
         }
     }
 
+    void pollButtons(){
+        for(ButtonSource& source : buttonSources_){
+            ButtonEvent event;
+            while(source.input->popEvent(event)){
+                if(source.handler){
+                    source.handler(event.channel, event.pressed);
+                }
+            }
+        }
+    }
+
     ControlInput* absolute_;
     RelativeControlInput* relative_;
     std::vector<AbsoluteSlot> absoluteSlots_;
     std::vector<RelativeSlot> relativeSlots_;
+    std::vector<ButtonSource> buttonSources_;
+    std::vector<ControlSurface*> surfaces_;
     std::thread thread_;
     std::atomic<bool> running_{false};
 };

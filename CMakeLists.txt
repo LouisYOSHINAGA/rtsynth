@@ -46,7 +46,9 @@ add_executable(rtsynth
     src/main.cpp
     src/host/GpioButtonInput.cpp
     src/host/GpioEncoderInput.cpp
+    src/host/I2cBus.cpp
     src/host/I2cLcd1602.cpp
+    src/host/Mcp23017Panel.cpp
     src/host/Mcp3008Input.cpp
     src/host/RawMidiInput.cpp
     src/host/RtAudioOutput.cpp
@@ -62,7 +64,12 @@ endif()
 # --- offline self-test: needs no audio hardware ------------------------------
 enable_testing()
 find_package(Threads REQUIRED)
-add_executable(rtsynth_selftest tests/selftest.cpp)
+# Mcp23017Panel is compiled in for its offline path (processSnapshot);
+# the test never opens a bus
+add_executable(rtsynth_selftest tests/selftest.cpp
+    src/host/I2cBus.cpp
+    src/host/Mcp23017Panel.cpp
+)
 target_link_libraries(rtsynth_selftest PRIVATE rtsynth_core Threads::Threads)
 if(TARGET rtsynth_pd)
     target_link_libraries(rtsynth_selftest PRIVATE rtsynth_pd)

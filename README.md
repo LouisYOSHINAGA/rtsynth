@@ -300,7 +300,8 @@ pd 音源はさらに多数の CC で音色パラメータを直接編集でき�
 
 ## 1.6 物理コントロール（ツマミ・エンコーダ）
 
-パラメータの操作手段は **MIDI CC / ADC ポット / GPIO エンコーダの 3 系統を併用可能**です。
+パラメータの操作手段は **MIDI CC / ADC ポット / GPIO エンコーダ / I/O エキスパンダの
+パネルを併用可能**です。
 すべて同じパラメータに書くので、「後から動かした側が勝つ」という通常のシンセパネルと
 同じ挙動になります。
 
@@ -332,6 +333,59 @@ EC11 等を GPIO に直結できます。A/B 端子を任意の GPIO へ、C（�
 カーネル標準の GPIO キャラクタデバイス（外部ライブラリ不要）でエッジイベントを受け、
 専用スレッドで直交デコードします。ポット（絶対値）と違い「現在値からの相対操作」なので、
 MIDI CC と取り合いになっても値が飛びません。
+
+### エンコーダ 16 個のエディットパネル（MCP23017 I/O エキスパンダ）
+
+エンコーダ・ボタン・LED を **I2C の I/O エキスパンダ MCP23017**（16 ピン、1 バスに最大 8 個）に
+載せ、**設定ファイル 1 枚**で配置と役割を決めます。Pi の GPIO を消費せず（I2C は LCD と共用）、
+ツマミを増やすのも設定ファイルの追記だけです。配線は
+[README_HW.md の Step 7](README_HW.md#8-step-7-エンコーダ-16-個のエディットパネルmcp23017-io-エキスパンダ)。
+
+```sh
+./build/rtsynth --synth pd --lcd 0x27 --panel panels/pd_2x8.conf
+```
+
+同梱の `panels/pd_2x8.conf` は **8 個 × 2 列**で line1 / line2 の EG を編集する構成です。
+
+| 操作 | 結果 |
+|---|---|
+| `dco` / `dcw` / `dca` ボタン | エンコーダが編集する EG を選ぶ（`eg` ボタン 1 個で巡回も可） |
+| `rate` / `level` ボタン | 編集するフィールドを選ぶ（`field` ボタン 1 個でトグルも可） |
+| 行 R のエンコーダ K | `line<R>_<eg>_<rate/level>K` を相対操作 |
+| `sus` を押しながらエンコーダ K | その行の line のサステインポイント = ステップ K（最後のツマミ = Off） |
+| `end` を押しながらエンコーダ K | エンドポイント = ステップ K（2〜8） |
+| LED | 選択中の EG / フィールド、押下中の sus / end。任意で `row<R>.step<K>` のステップ LED（エンドまで点灯、sus/end 押下中はその位置だけ点灯） |
+
+設定ファイルの書式（`#` 以降はコメント）:
+
+```
+bus /dev/i2c-1
+expander 0x20                 # 宣言順にチップ 0, 1, 2, ...
+interrupt 4                   # 任意: 全チップの INTA を繋いだ Pi の GPIO
+scan-rate 1000                # INT 無しのときの読取り周期 [Hz]
+encoder-quarters 4            # 直交エッジ何個で 1 ステップか（無段階なら 1〜4 で好みに）
+encoder-step 0.01             # 1 ステップの変化量（正規化値）
+debounce 5                    # ボタンのチャタリング除去 [ms]
+pullups on                    # エンコーダ/ボタンのピンに内部プルアップ
+
+encoder <役割> <A ピン> <B ピン>   # ピンは <チップ>.<A|B><0-7>、例 0.A0
+button  <役割> <ピン>
+led     <役割> <ピン> [active-low]
+```
+
+| 種類 | 役割 |
+|---|---|
+| encoder | `row<R>.<K>`（EG エディタ）、`param:<id>`（固定割当。`--enc` と同じ動作） |
+| button | `dco` `dcw` `dca` `eg` `rate` `level` `field` `sus` `end`（EG エディタ）、`preset-next` `preset-prev` `revert` `panic`（`--button` と同じ） |
+| led | `dco` `dcw` `dca` `rate` `level` `sus` `end`、`row<R>.step<K>` |
+
+- **GPA7 / GPB7 は出力専用**（現行 MCP23017 の仕様）なので、入力を割り当てると起動時に
+  エラーになります。LED に使ってください。同じピンの二重割当・未宣言のチップも行番号付きで
+  エラーになります
+- EG エディタの役割は pd のパラメータ名（`line1_dcw_rate3` 等）を引くので `--synth pd` 専用です。
+  `param:` だけのパネルはどの音源でも使えます
+- INT 線（任意）を引くと、ピンが変化したときだけ読みに行きます（チップは
+  INT ミラー・オープンドレインに設定されるので、全チップの INTA を 1 本にまとめて構いません）
 
 ### パネルボタン（タクトスイッチ直結）
 
@@ -628,9 +682,17 @@ PipeWire、プラグインラッパ等）への移植ではこの層だけを書
 | `RawMidiInput.{hpp,cpp}` | カーネル rawmidi 直読みの実装（`--midi-raw`）。シーケンサと RtMidi を完全にバイパスする最短経路。poll + ノンブロッキング read → `MidiStreamParser`。抜線は読み取りスレッドが `POLLHUP` / `-ENODEV` で検知してスロットを返し、`rescan()` が回収・再接続する |
 | `StandaloneHost.{hpp,cpp}` | 全体の糊。**3 スレッド（MIDI / オーディオ RT / メイン）の関係はこのヘッダのコメント参照**。ブロックごとに MIDI キューを `MidiBuffer` へ排出。バッファ満杯時は**イベントを捨てずに排出を止める**（次ブロックで続きを読む） |
 | `ControlInput.hpp` | 物理コントロールの抽象 2 種: **絶対値** `ControlInput`（ポット等、[0,1] を返す）と**相対値** `RelativeControlInput`（エンコーダ等、前回からのステップ数を返す） |
-| `ControlLoop.hpp` | 制御スレッド。絶対値入力は EMA ノイズ除去＋書込み閾値、相対値入力はデテント×ステップ幅でパラメータに書く。両方式を併用可能 |
+| `ControlLoop.hpp` | 制御スレッド。絶対値入力は EMA ノイズ除去＋書込み閾値、相対値入力はデテント×ステップ幅でパラメータに書く。両方式を併用可能。加えて**ボタンの処理と `ControlSurface`（ページ切替などのパネルの振る舞い）もこのスレッドで回す** — パネル側のロジックはすべてここ 1 本に集まる |
 | `Mcp3008Input.{hpp,cpp}` | MCP3008（SPI 8ch 10bit ADC）の `ControlInput` 実装。配線図はヘッダのコメント参照 |
-| `GpioEncoderInput.{hpp,cpp}` | GPIO ロータリーエンコーダの `RelativeControlInput` 実装。GPIO キャラクタデバイス (uapi v2) でエッジイベントを受け、直交デコード（`QuadratureDecoder` は単体テスト可能に分離） |
+| `GpioEncoderInput.{hpp,cpp}` | GPIO ロータリーエンコーダの `RelativeControlInput` 実装。GPIO キャラクタデバイス (uapi v2) でエッジイベントを受け、直交デコード |
+| `QuadratureDecoder.hpp` | 直交デコーダ（A/B の状態 → ステップ）。GPIO 版と MCP23017 版で共用、単体テスト可能 |
+| `ButtonInput.hpp` | 押しボタン群の抽象。実装は自スレッドでデバウンス済みのエッジを SPSC キューに積み、**`ControlLoop` のスレッドがまとめて取り出して処理**する（ボタン動作の送り先 = ホストのキューが単一生産者なので、ボタンの供給元がいくつあっても発行スレッドを 1 本に揃えるため） |
+| `LedOutput.hpp` | LED 群の抽象。`setLed()` はどのスレッドからでも呼べ、ブロックしない |
+| `GpioButtonInput.{hpp,cpp}` | GPIO 直結タクトスイッチの `ButtonInput` 実装（カーネル側デバウンス） |
+| `I2cBus.{hpp,cpp}` | I2C バスのレジスタ読み書き。`I2C_RDWR` で転送ごとにアドレスを指定するので 1 本の fd で複数チップを扱える。読みはレジスタ指定と読出しを 1 トランザクションで行う |
+| `Mcp23017Panel.{hpp,cpp}` | MCP23017（最大 8 個）上のエンコーダ・ボタン・LED。走査スレッドが全チップの GPIO を読み、`encoders()`（`RelativeControlInput`）/ `buttons()`（`ButtonInput`）/ `leds()`（`LedOutput`）として公開する。INT 線があれば変化時のみ読む。`processSnapshot()` でハード無しに単体テスト可能 |
+| `PanelConfig.hpp` | `--panel` 設定ファイルのパーサ（構文のみ。役割の解釈は `main.cpp`） |
+| `EgEditPanel.hpp` | 「何を編集中か」を持つページ切替ロジック（`ControlSurface`）。行 = line、列 = EG ステップ、ボタンで EG / rate・level を選び、sus/end 押下中はポイント設定、LED に選択状態を出す。ハード非依存（入力と LED はインタフェース越し）で、`ControlLoop` のスレッドだけで動くのでロック不要 |
 | `ParameterWatcher.hpp` | UI スレッド（LCD・コンソール等）向けの変更検知。全パラメータの変更カウンタをポーリングし「前回から変わったパラメータ」だけを報告 |
 | `ParameterDisplay.hpp` | 表示バックエンドの抽象（`showParameter` / `showPreset`）と、`-v` 用のコンソール実装。**表示先を増やすのはここを実装するだけ**。1 行ぶんのデータは `DisplayLine`（ID / 表示名 / 整形済みの値 / きっかけ）で、16x2 LCD が自分で配置できるようフィールドを分けてある |
 | `LcdParameterDisplay.hpp` | `DisplayLine` をキャラクタ表示に割り付ける `ParameterDisplay` 実装（上段=表示名、下段=値、プリセットは `PRESET n`/名前）。桁数に合わせて切り詰め、**内容が変わった行だけ**書き直すので待機中の I2C トラフィックはゼロ |
@@ -674,7 +736,8 @@ RT スレッドの規約はひとつだけです: **アロケーション・ロ�
 スタックノート回帰・同ノート二重発音の回帰・サステインペダル・ピッチベンド・
 ポリフォニー上限・pd 音源と CC マッピング・**全ファクトリプリセットが実際に発音するか**・
 **Program Change による切替と編集内容の保持**・**`ParameterMonitor` の表示内容**・
-エンコーダの直交デコード・`ParameterWatcher`・`MidiStreamParser` の各ケース・
+エンコーダの直交デコード・**MCP23017 パネルのデコード／デバウンス／ピン割当検査・
+設定ファイルのパース・EG エディットパネルのページ切替と sus/end 設定**・`ParameterWatcher`・`MidiStreamParser` の各ケース・
 SPSC キューの 20 万イベントマルチスレッドストレステスト。CI にそのまま載せられます。
 
 ## 2.4 PD シンセの取り込み方
@@ -761,7 +824,9 @@ CC 割当を増やされた場合は追従が必要（コンパイルは通る�
 |---|---|
 | 新しい音源方式 | `synth/` に `Processor` 実装を追加し、`main.cpp` の `--synth` 分岐に登録。ホスト層は変更不要（外部リポジトリの取り込みは `PdSynthProcessor` + submodule + shim が実例） |
 | フィルタ・LFO 等の部品追加 | `dsp/` に部品を追加し `Voice` に組み込む |
-| 新しい入力ハード（別 ADC・ボタン等） | `ControlInput` / `RelativeControlInput` を実装（`Mcp3008Input` / `GpioEncoderInput` が実例、約 60 行）。押しボタンも `GpioEncoderInput` と同じ GPIO エッジイベントで読める |
+| 新しい入力ハード（別 ADC・ボタン等） | `ControlInput` / `RelativeControlInput` / `ButtonInput` / `LedOutput` を実装（`Mcp3008Input` / `GpioEncoderInput` / `GpioButtonInput` / `Mcp23017Panel` が実例） |
+| パネルのツマミ・ボタンを増やす | `--panel` の設定ファイルに追記（エキスパンダは 1 バス 8 個 = 128 ピンまで）。再ビルド不要 |
+| パネルの新しい操作体系（別ページ、別音源向け） | `ControlSurface` を実装して `ControlLoop::addSurface()`（`EgEditPanel` が実例）し、`main.cpp` の `setUpPanel()` で役割名を割り当てる |
 | 別の表示器（OLED・大きい LCD 等） | 16x2 I2C LCD は実装済み（`--lcd`）。別の表示器も `ParameterDisplay` を実装して `ParameterMonitor::addDisplay()` で登録するだけ（`ConsoleParameterDisplay` / `LcdParameterDisplay` が実例）。桁数だけ違う HD44780 系なら `TextDisplay` 実装の差し替えで済む。I2C の SSD1306 OLED が次の定番 |
 | プリセットを増やす | `PdSynthProcessor::registerFactoryPresets()` に 1 行足す（差分だけ書くスパース定義） |
 | 他の音源にプリセットを持たせる | `PresetBank` をメンバに持ち、`Processor::presets()` を override して Program Change を `handleEvent()` で処理（`PdSynthProcessor` が実例） |

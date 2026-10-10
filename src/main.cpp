@@ -10,6 +10,7 @@
 #include <chrono>
 #include <csignal>
 #include <cstring>
+#include <functional>
 #include <iostream>
 #include <memory>
 #include <string>
@@ -18,11 +19,14 @@
 #include <vector>
 
 #include "host/ControlLoop.hpp"
+#include "host/EgEditPanel.hpp"
 #include "host/GpioButtonInput.hpp"
 #include "host/GpioEncoderInput.hpp"
 #include "host/I2cLcd1602.hpp"
 #include "host/LcdParameterDisplay.hpp"
+#include "host/Mcp23017Panel.hpp"
 #include "host/Mcp3008Input.hpp"
+#include "host/PanelConfig.hpp"
 #include "host/ParameterDisplay.hpp"
 #include "host/ParameterMonitor.hpp"
 #include "host/RawMidiInput.hpp"
@@ -79,6 +83,9 @@ void printUsage(const char* argv0){
         "                       revert (undo this preset's edits), panic\n"
         "                       (e.g. --button 5=preset-prev --button 6=preset-next)\n"
         "  --button-chip <path> GPIO chip of the buttons (default: /dev/gpiochip0)\n"
+        "  --panel <file>       a control panel on MCP23017 I2C expanders: encoders,\n"
+        "                       buttons and LEDs as described in <file>\n"
+        "                       (see panels/pd_2x8.conf)\n"
         "  --lcd <addr>         show the last-changed parameter on a 16x2 I2C LCD\n"
         "                       at this address (e.g. --lcd 0x27; find with i2cdetect)\n"
         "  --lcd-bus <path>     I2C bus of the LCD (default: /dev/i2c-1)\n"
@@ -231,6 +238,11 @@ struct ButtonMapping {
 constexpr const char* kButtonActions =
     "preset-next, preset-prev, revert, panic";
 
+bool isButtonAction(const std::string& action){
+    return action == "preset-next" || action == "preset-prev"
+        || action == "revert" || action == "panic";
+}
+
 struct CliOptions {
     rtsynth::StandaloneHost::Options host;
     std::string synthName = "sine";
@@ -244,6 +256,7 @@ struct CliOptions {
     float encoderStep = 0.01f;
     std::vector<ButtonMapping> buttonMappings;
     std::string buttonChip = "/dev/gpiochip0";
+    std::string panelConfig;           // --panel file, "" = no expander panel
     int lcdAddress = -1;               // -1 = no LCD
     std::string lcdBus = "/dev/i2c-1";
     int maxVoices = 0;                 // 0 = instrument default
@@ -330,8 +343,7 @@ bool parseArguments(int argc, char* argv[], CliOptions& cli, bool& exitRequested
                 if(const char* v = nextArg()){
                     std::string pin, action;
                     if(!splitAssignment(v, "--button", pin, action)) return false;
-                    if(action != "preset-next" && action != "preset-prev"
-                       && action != "revert" && action != "panic"){
+                    if(!isButtonAction(action)){
                         std::cerr << "--button action '" << action
                                   << "' is unknown. Available: " << kButtonActions
                                   << std::endl;
@@ -340,6 +352,8 @@ bool parseArguments(int argc, char* argv[], CliOptions& cli, bool& exitRequested
                     cli.buttonMappings.push_back(
                         {static_cast<unsigned int>(std::stoul(pin)), action});
                 }
+            }else if(arg == "--panel"){
+                if(const char* v = nextArg()) cli.panelConfig = v;
             }else if(arg == "--button-chip"){
                 if(const char* v = nextArg()) cli.buttonChip = v;
             }else if(arg == "--enc-chip"){
@@ -382,6 +396,123 @@ bool parseArguments(int argc, char* argv[], CliOptions& cli, bool& exitRequested
         printUsage(argv[0]);
         return false;
     }
+    return true;
+}
+
+// Builds the --panel hardware from its config file and gives every
+// control its job. Roles are resolved here, in one place:
+//
+//   encoder  rowR.K        -> EgEditPanel (row R, step K)
+//            param:<id>    -> that parameter, fixed (like --enc)
+//   button   dco/dcw/dca/eg/rate/level/field/sus/end -> EgEditPanel
+//            preset-next/preset-prev/revert/panic     -> host action
+//   led      dco/.../sus/end/rowR.stepK               -> EgEditPanel
+//
+// panelButtonIds[i] is the EgEditPanel id of expander button i, or -1
+// when panelButtonActions[i] holds a host action instead.
+bool setUpPanel(const std::string& path, rtsynth::Mcp23017Panel& panel,
+                rtsynth::EgEditPanel& egPanel, rtsynth::ControlLoop& controlLoop,
+                rtsynth::Processor& synth,
+                const std::function<rtsynth::Parameter*(const std::string&)>& findParameter,
+                const std::function<bool(const std::string&, const std::string&)>& checkAction,
+                std::vector<std::string>& panelButtonActions,
+                std::vector<int>& panelButtonIds){
+    rtsynth::PanelConfig config;
+    std::string error;
+    if(!rtsynth::loadPanelConfig(path, config, error)){
+        std::cerr << "--panel: " << error << std::endl;
+        return false;
+    }
+    auto fail = [&path](int line, const std::string& message){
+        std::cerr << "--panel: " << path << ", line " << line << ": " << message << std::endl;
+        return false;
+    };
+
+    for(uint8_t address : config.expanders){
+        if(panel.addExpander(address) < 0){
+            std::cerr << "--panel: " << path << ": " << panel.lastError() << std::endl;
+            return false;
+        }
+    }
+
+    // The EG editor is only bound when the file uses it, so a panel of
+    // plain param: knobs also works on instruments without pd's EGs.
+    bool usesEgPanel = false;
+    for(const auto& e : config.encoders){
+        int row = 0, step = 0;
+        usesEgPanel |= rtsynth::EgEditPanel::parseEncoderRole(e.role, row, step);
+    }
+    for(const auto& b : config.buttons){
+        usesEgPanel |= (egPanel.buttonId(b.role) >= 0);
+    }
+    usesEgPanel |= !config.leds.empty();  // every LED role belongs to it
+    if(usesEgPanel){
+        if(!egPanel.bind(synth.parameters(), error)){
+            std::cerr << "--panel: the EG editor roles (rowR.K, dco, sus, ...) need the pd "
+                         "synth (--synth pd): " << error << std::endl;
+            return false;
+        }
+        egPanel.setStepSize(config.encoderStep);
+    }
+
+    for(const auto& e : config.encoders){
+        const int channel = panel.addEncoder(e.a, e.b);
+        if(channel < 0){
+            return fail(e.line, panel.lastError());
+        }
+        int row = 0, step = 0;
+        if(rtsynth::EgEditPanel::parseEncoderRole(e.role, row, step)){
+            if(!egPanel.attachEncoder(row, step, &panel.encoders(), channel)){
+                return fail(e.line, "no encoder slot '" + e.role + "' (rows 1-2, steps 1-8)");
+            }
+        }else if(e.role.rfind("param:", 0) == 0){
+            rtsynth::Parameter* parameter = findParameter(e.role.substr(6));
+            if(parameter == nullptr){
+                return false;
+            }
+            controlLoop.addRelativeMapping(&panel.encoders(), channel, parameter,
+                                           config.encoderStep);
+        }else{
+            return fail(e.line, "unknown encoder role '" + e.role
+                                + "' (rowR.K or param:<id>)");
+        }
+    }
+
+    for(const auto& b : config.buttons){
+        if(panel.addButton(b.pin) < 0){
+            return fail(b.line, panel.lastError());
+        }
+        const int id = egPanel.buttonId(b.role);
+        if(id < 0 && !checkAction("--panel line " + std::to_string(b.line), b.role)){
+            return false;
+        }
+        panelButtonIds.push_back(id);
+        panelButtonActions.push_back(id < 0? b.role : "");
+    }
+
+    for(const auto& l : config.leds){
+        const int channel = panel.addLed(l.pin, l.activeLow);
+        if(channel < 0){
+            return fail(l.line, panel.lastError());
+        }
+        if(!egPanel.attachLed(l.role, &panel.leds(), channel)){
+            return fail(l.line, "unknown LED role '" + l.role + "'");
+        }
+    }
+
+    if(!panel.open(config.options)){
+        return false;
+    }
+    if(usesEgPanel){
+        controlLoop.addSurface(&egPanel);
+    }
+    std::cout << "Panel: " << panel.numExpanders() << " MCP23017 on "
+              << config.options.busPath << ", " << config.encoders.size() << " encoders, "
+              << config.buttons.size() << " buttons, " << config.leds.size() << " LEDs"
+              << (config.options.interruptLine >= 0
+                      ? ", interrupt on GPIO" + std::to_string(config.options.interruptLine)
+                      : ", polled at " + std::to_string(config.options.scanRateHz) + " Hz")
+              << std::endl;
     return true;
 }
 
@@ -500,11 +631,54 @@ int main(int argc, char* argv[]){
         host.midi().setRawDumpEnabled(true);
     }
 
-    // optional hardware controls: ADC pots (absolute) and/or GPIO rotary
-    // encoders (relative), both feeding the same ControlLoop
-    rtsynth::Mcp3008Input adc;
-    rtsynth::GpioEncoderInput encoders;
+    // --- optional hardware controls ------------------------------------------
+    //
+    // Every input is declared before the ControlLoop: the loop's thread
+    // reads them (and the strings and panel logic its handlers use), so
+    // they must be destroyed after it — and destruction runs in reverse.
+    rtsynth::Mcp3008Input adc;                 // pots (absolute)
+    rtsynth::GpioEncoderInput encoders;        // encoders on Pi GPIO (relative)
+    rtsynth::GpioButtonInput buttons;          // buttons on Pi GPIO
+    rtsynth::Mcp23017Panel panel;              // encoders/buttons/LEDs on expanders
+    rtsynth::EgEditPanel egPanel;              // what the expander encoders edit
+    std::vector<std::string> gpioButtonActions;
+    std::vector<std::string> panelButtonActions;  // "" = an EgEditPanel role
+    std::vector<int> panelButtonIds;
     rtsynth::ControlLoop controlLoop(&adc, &encoders);
+
+    const bool havePresets = (presets != nullptr && !presets->empty());
+
+    // Runs on the ControlLoop thread — the one thread allowed to feed the
+    // host's control queues — so every action becomes an event for the
+    // audio thread to apply.
+    // (Handlers take it by value: it is declared after the loop, so a
+    // reference would dangle while an early return tears things down.)
+    auto performAction = [&host, presets](const std::string& action){
+        if(action == "panic"){
+            // CC120 All Sound Off, the same message a panic button on a
+            // MIDI controller sends
+            host.sendControlEvent(rtsynth::MidiEvent::controlChange(0, 120, 0));
+        }else if(action == "revert"){
+            host.sendCommand(rtsynth::HostCommand::RevertPreset);
+        }else{
+            const int delta = (action == "preset-next")? +1 : -1;
+            host.sendControlEvent(rtsynth::MidiEvent::programChange(
+                0, static_cast<uint8_t>(presets->neighbour(delta))));
+        }
+    };
+    auto checkAction = [&](const std::string& where, const std::string& action){
+        if(!isButtonAction(action)){
+            std::cerr << where << ": unknown button action '" << action
+                      << "'. Available: " << kButtonActions << std::endl;
+            return false;
+        }
+        if(!havePresets && action != "panic"){
+            std::cerr << where << ": '" << action << "' needs an instrument with presets; "
+                      << synth->name() << " has none." << std::endl;
+            return false;
+        }
+        return true;
+    };
 
     if(!cli.adcMappings.empty()){
         if(!adc.open(cli.adcDevice)){
@@ -537,50 +711,20 @@ int main(int argc, char* argv[]){
                   << ", " << cli.encoderMappings.size() << " mapping(s)" << std::endl;
     }
 
-    if(!cli.adcMappings.empty() || !cli.encoderMappings.empty()){
-        controlLoop.start();
-    }
-
-    // Panel buttons. Declared before the driver so the strings the handler
-    // reads outlive the thread reading them (destruction runs in reverse).
-    std::vector<std::string> buttonActions;
-    rtsynth::GpioButtonInput buttons;
     if(!cli.buttonMappings.empty()){
-        const bool havePresets = (presets != nullptr && !presets->empty());
         for(const ButtonMapping& mapping : cli.buttonMappings){
-            if(!havePresets && mapping.action != "panic"){
-                std::cerr << "--button " << mapping.pin << "=" << mapping.action
-                          << " needs an instrument with presets; " << synth->name()
-                          << " has none." << std::endl;
+            if(!checkAction("--button " + std::to_string(mapping.pin), mapping.action)){
                 return 1;
             }
             buttons.addButton(mapping.pin);
-            buttonActions.push_back(mapping.action);
+            gpioButtonActions.push_back(mapping.action);
         }
-
-        // Runs on the button thread: it may only touch lock-free state, so
-        // every action becomes an event for the audio thread to apply.
-        buttons.setStateHandler(
-            [&host, &buttonActions, presets](int channel, bool pressed){
-                if(!pressed){
-                    return;  // act on the press; the release edge is spare
+        controlLoop.addButtons(&buttons,
+            [&gpioButtonActions, performAction](int channel, bool pressed){
+                if(pressed){  // act on the press; the release edge is spare
+                    performAction(gpioButtonActions[static_cast<size_t>(channel)]);
                 }
-                const std::string& action = buttonActions[static_cast<size_t>(channel)];
-                if(action == "panic"){
-                    // CC120 All Sound Off, the same message a panic button
-                    // on a MIDI controller sends
-                    host.sendControlEvent(rtsynth::MidiEvent::controlChange(0, 120, 0));
-                    return;
-                }
-                if(action == "revert"){
-                    host.sendCommand(rtsynth::HostCommand::RevertPreset);
-                    return;
-                }
-                const int delta = (action == "preset-next")? +1 : -1;
-                host.sendControlEvent(rtsynth::MidiEvent::programChange(
-                    0, static_cast<uint8_t>(presets->neighbour(delta))));
             });
-
         if(!buttons.open(cli.buttonChip)){
             return 1;
         }
@@ -588,6 +732,27 @@ int main(int argc, char* argv[]){
                   << cli.buttonChip
                   << (buttons.debounceActive()? "" : " (no kernel debounce)")
                   << std::endl;
+    }
+
+    if(!cli.panelConfig.empty()){
+        if(!setUpPanel(cli.panelConfig, panel, egPanel, controlLoop, *synth, findParameter,
+                       checkAction, panelButtonActions, panelButtonIds)){
+            return 1;
+        }
+        controlLoop.addButtons(&panel.buttons(),
+            [&panelButtonIds, &panelButtonActions, &egPanel, performAction](
+                    int channel, bool pressed){
+                const size_t i = static_cast<size_t>(channel);
+                if(panelButtonIds[i] >= 0){
+                    egPanel.onButton(panelButtonIds[i], pressed);
+                }else if(pressed){
+                    performAction(panelButtonActions[i]);
+                }
+            });
+    }
+
+    if(controlLoop.hasWork()){
+        controlLoop.start();
     }
 
     // optional 16x2 I2C LCD. It is a ParameterDisplay like the console
@@ -628,6 +793,7 @@ int main(int argc, char* argv[]){
     int lastVoices = -1;
     int loadTicks = 0;
     uint64_t lastReadErrors = 0;
+    uint64_t lastPanelErrors = 0;
     bool schedulingReported = false;
     // poll faster when something is being traced so the prints feel
     // immediate; otherwise this loop only watches the error counters
@@ -745,6 +911,12 @@ int main(int argc, char* argv[]){
                       << ")" << std::endl;
             lastUndecoded = undecoded;
         }
+        const uint64_t panelErrors = panel.readErrorCount();
+        if(panelErrors != lastPanelErrors){
+            std::cerr << "[warning] I2C errors on the expander panel — check its wiring"
+                         " (total: " << panelErrors << ")" << std::endl;
+            lastPanelErrors = panelErrors;
+        }
         const uint64_t readErrors = host.midi().readErrorCount();
         if(readErrors != lastReadErrors){
             std::cerr << "[warning] MIDI device read errors — the kernel buffer"
@@ -759,6 +931,7 @@ int main(int argc, char* argv[]){
         lcdDisplay.showStatus("rtsynth", "stopped");
     }
     controlLoop.stop();
+    panel.close();
     encoders.close();
     host.stop();
     return 0;

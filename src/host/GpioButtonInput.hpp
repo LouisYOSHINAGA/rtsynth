@@ -1,11 +1,12 @@
 #pragma once
 
 #include <atomic>
-#include <functional>
 #include <memory>
 #include <string>
 #include <thread>
 #include <vector>
+
+#include "ButtonInput.hpp"
 
 namespace rtsynth {
 
@@ -32,25 +33,20 @@ namespace rtsynth {
 // nothing here has to filter contact bounce; a chip or kernel without
 // that support falls back to undebounced edges rather than failing.
 //
-// Threading: one thread polls every button's line fd and calls the state
-// handler directly from it. Handlers must not block — pushing onto a
-// lock-free queue (see StandaloneHost::sendControlEvent) is the intended
-// shape, which also makes this thread that queue's single producer.
-class GpioButtonInput {
+// Threading: one thread polls every button's line fd and publishes the
+// edges into the ButtonInput queue; the ControlLoop thread drains it and
+// performs the actions (see ButtonInput for why it must be that thread).
+class GpioButtonInput : public ButtonInput {
 public:
-    // pressed = true on the edge that closes the switch
-    using StateFn = std::function<void(int channel, bool pressed)>;
-
     // setup only (before open); returns the channel index for this button
     int addButton(unsigned int pin);
-    void setStateHandler(StateFn handler){ handler_ = std::move(handler); }
 
     bool open(const std::string& chipPath, unsigned int debounceUs = 5000);
     void close();
-    ~GpioButtonInput(){ close(); }
+    ~GpioButtonInput() override { close(); }
 
-    int numChannels() const { return static_cast<int>(buttons_.size()); }
-    std::string name() const { return "GPIO buttons"; }
+    int numChannels() const override { return static_cast<int>(buttons_.size()); }
+    const char* name() const override { return "GPIO buttons"; }
     // false when the kernel would not take the debounce attribute, i.e.
     // the edges arrive raw — worth saying once at startup
     bool debounceActive() const { return debounceActive_; }
@@ -64,7 +60,6 @@ private:
     void eventThread();
 
     std::vector<std::unique_ptr<Button>> buttons_;
-    StateFn handler_;
     std::thread thread_;
     std::atomic<bool> running_{false};
     bool debounceActive_ = false;

@@ -119,9 +119,7 @@ void GpioButtonInput::eventThread(){
                 // pull-up + switch to GND: falling edge closes the switch
                 const bool pressed =
                     (events[e].id == GPIO_V2_LINE_EVENT_FALLING_EDGE);
-                if(handler_){
-                    handler_(static_cast<int>(i), pressed);
-                }
+                publish(static_cast<int>(i), pressed);
             }
         }
     }
