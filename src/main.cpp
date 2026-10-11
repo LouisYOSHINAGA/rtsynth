@@ -85,7 +85,7 @@ void printUsage(const char* argv0){
         "  --button-chip <path> GPIO chip of the buttons (default: /dev/gpiochip0)\n"
         "  --panel <file>       a control panel on MCP23017 I2C expanders: encoders,\n"
         "                       buttons and LEDs as described in <file>\n"
-        "                       (see panels/pd_2x8.conf)\n"
+        "                       (see panels/pd_2line.conf)\n"
         "  --lcd <addr>         show the last-changed parameter on a 16x2 I2C LCD\n"
         "                       at this address (e.g. --lcd 0x27; find with i2cdetect)\n"
         "  --lcd-bus <path>     I2C bus of the LCD (default: /dev/i2c-1)\n"
@@ -402,11 +402,11 @@ bool parseArguments(int argc, char* argv[], CliOptions& cli, bool& exitRequested
 // Builds the --panel hardware from its config file and gives every
 // control its job. Roles are resolved here, in one place:
 //
-//   encoder  rowR.K        -> EgEditPanel (row R, step K)
-//            param:<id>    -> that parameter, fixed (like --enc)
-//   button   dco/dcw/dca/eg/rate/level/field/sus/end -> EgEditPanel
-//            preset-next/preset-prev/revert/panic     -> host action
-//   led      dco/.../sus/end/rowR.stepK               -> EgEditPanel
+//   encoder  rowR.K          -> EgEditPanel (row R, step K)
+//            param:<id>      -> that parameter, fixed (like --enc)
+//   button   rowR.eg/field/sus/end/dco/.../rate/level, line -> EgEditPanel
+//            preset-next/preset-prev/revert/panic           -> host action
+//   led      rowR.dco/.../rate/level/susK/endK, line.K      -> EgEditPanel
 //
 // panelButtonIds[i] is the EgEditPanel id of expander button i, or -1
 // when panelButtonActions[i] holds a host action instead.
@@ -448,7 +448,7 @@ bool setUpPanel(const std::string& path, rtsynth::Mcp23017Panel& panel,
     usesEgPanel |= !config.leds.empty();  // every LED role belongs to it
     if(usesEgPanel){
         if(!egPanel.bind(synth.parameters(), error)){
-            std::cerr << "--panel: the EG editor roles (rowR.K, dco, sus, ...) need the pd "
+            std::cerr << "--panel: the EG editor roles (rowR.K, rowR.eg, line, ...) need the pd "
                          "synth (--synth pd): " << error << std::endl;
             return false;
         }

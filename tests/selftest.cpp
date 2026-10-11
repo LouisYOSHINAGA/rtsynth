@@ -919,7 +919,7 @@ int main(){
                "panel config: a bad pin is reported with its line");
     }
 
-    // EG edit panel: page selection, sustain/end via held buttons, LEDs
+    // EG edit panel: per-row selection, sustain/end buttons, LEDs
     {
         // the pd parameter names, built by hand so this runs without pd
         ParameterSet params;
@@ -929,10 +929,11 @@ int main(){
                     "line" + std::to_string(line) + "_" + eg + "_";
                 for(int k = 1; k <= 8; k++) params.add(prefix + "rate" + std::to_string(k), "", 0, 1, 0.5f);
                 for(int k = 1; k <= 7; k++) params.add(prefix + "level" + std::to_string(k), "", 0, 1, 0.5f);
-                params.add(prefix + "sustain", "", 0, 1, 0.0f);
-                params.add(prefix + "end", "", 0, 1, 0.0f);
+                params.add(prefix + "sustain", "", 0, 1, 0.0f);   // Off
+                params.add(prefix + "end", "", 0, 1, 0.0f);       // step 2
             }
         }
+        params.add("line_select", "", 0, 1, 0.0f);               // Line 1
 
         struct FakeEncoders : RelativeControlInput {
             int pending[16] = {};
@@ -941,8 +942,8 @@ int main(){
             int readDelta(int ch) override { const int d = pending[ch]; pending[ch] = 0; return d; }
         } encoders;
         struct FakeLeds : LedOutput {
-            bool on[32] = {};
-            int numChannels() const override { return 32; }
+            bool on[64] = {};
+            int numChannels() const override { return 64; }
             void setLed(int ch, bool value) override { on[ch] = value; }
         } leds;
 
@@ -955,60 +956,117 @@ int main(){
                 panel.attachEncoder(row, step, &encoders, (row - 1) * 8 + step - 1);
             }
         }
-        // LEDs: 0 dco 1 dcw 2 dca 3 rate 4 level 5 sus, 8.. row1 steps
-        const char* modeLeds[] = {"dco", "dcw", "dca", "rate", "level", "sus"};
-        for(int i = 0; i < 6; i++) panel.attachLed(modeLeds[i], &leds, i);
-        for(int k = 1; k <= 8; k++) panel.attachLed("row1.step" + std::to_string(k), &leds, 7 + k);
-        expect(!panel.attachLed("bogus", &leds, 30), "EG panel: unknown LED role is refused");
+        // LEDs for row 1: 0 dco 1 dcw 2 dca 3 rate 4 level,
+        // 10+K sus K (1..8), 20+K end K (2..8); row 2 dco = 5; line.K = 40+K
+        const char* modeLeds[] = {"dco", "dcw", "dca", "rate", "level"};
+        for(int i = 0; i < 5; i++) panel.attachLed(std::string("row1.") + modeLeds[i], &leds, i);
+        panel.attachLed("row2.dco", &leds, 5);
+        for(int k = 1; k <= 8; k++) panel.attachLed("row1.sus" + std::to_string(k), &leds, 10 + k);
+        for(int k = 2; k <= 8; k++) panel.attachLed("row1.end" + std::to_string(k), &leds, 20 + k);
+        for(int k = 1; k <= 4; k++) panel.attachLed("line." + std::to_string(k), &leds, 40 + k);
+        expect(!panel.attachLed("row1.bogus", &leds, 60) && !panel.attachLed("row3.dco", &leds, 60)
+               && !panel.attachLed("line.5", &leds, 60),
+               "EG panel: unknown LED roles are refused");
+        expect(panel.buttonId("row1.eg") >= 0 && panel.buttonId("row2.sus") >= 0
+               && panel.buttonId("line") >= 0 && panel.buttonId("eg") < 0
+               && panel.buttonId("row3.eg") < 0 && panel.buttonId("preset-next") < 0,
+               "EG panel: button roles are per row (plus the global line)");
 
         encoders.pending[2] = +5;   // row 1, step 3: line1_dco_rate3
         panel.poll();
         expect(std::abs(params.byId("line1_dco_rate3")->getNormalized() - 0.55f) < 1e-4f,
                "EG panel: default page edits DCO rate");
-        expect(leds.on[0] && !leds.on[1] && leds.on[3] && !leds.on[4],
+        expect(leds.on[0] && !leds.on[1] && leds.on[3] && !leds.on[4] && leds.on[5],
                "EG panel: LEDs show DCO / rate");
 
-        panel.onButton(panel.buttonId("dcw"), true);
-        panel.onButton(panel.buttonId("dcw"), false);
-        panel.onButton(panel.buttonId("level"), true);
-        encoders.pending[8 + 1] = -10;  // row 2, step 2: line2_dcw_level2
+        // row 1: eg button DCO -> DCW, field button -> level; row 2 untouched
+        panel.onButton(panel.buttonId("row1.eg"), true);
+        panel.onButton(panel.buttonId("row1.eg"), false);
+        panel.onButton(panel.buttonId("row1.field"), true);
+        encoders.pending[1] = -10;      // row 1, step 2: line1_dcw_level2
+        encoders.pending[8 + 1] = +10;  // row 2, step 2: line2_dco_rate2
         panel.poll();
-        expect(std::abs(params.byId("line2_dcw_level2")->getNormalized() - 0.40f) < 1e-4f,
-               "EG panel: dcw + level re-target the second row");
-        expect(!leds.on[0] && leds.on[1] && leds.on[4], "EG panel: LEDs follow the selection");
+        expect(std::abs(params.byId("line1_dcw_level2")->getNormalized() - 0.40f) < 1e-4f
+               && std::abs(params.byId("line2_dco_rate2")->getNormalized() - 0.60f) < 1e-4f,
+               "EG panel: each row keeps its own EG and field");
+        expect(!leds.on[0] && leds.on[1] && leds.on[4] && !leds.on[3] && leds.on[5],
+               "EG panel: LEDs follow each row's selection");
+        panel.onButton(panel.buttonId("row1.eg"), true);
+        panel.onButton(panel.buttonId("row1.eg"), true);
+        expect(panel.selectedEgName(0) == "dco", "EG panel: eg button wraps DCA -> DCO");
+        panel.onButton(panel.buttonId("row1.dcw"), true);
+        expect(panel.selectedEgName(0) == "dcw", "EG panel: direct EG buttons work too");
 
         encoders.pending[7] = +1;       // row 1, step 8: level 8 does not exist
         panel.poll();                   // must simply do nothing
-        panel.onButton(panel.buttonId("field"), true);  // toggle back to rate
-        expect(panel.selectedField() == EgEditPanel::Field::Rate, "EG panel: field toggles");
-        panel.onButton(panel.buttonId("eg"), true);     // cycle dcw -> dca
-        expect(panel.selectedEgName() == "dca", "EG panel: eg button cycles");
 
-        // hold sus, turn row-1 encoder 3 -> line1_dca_sustain = step 3
-        panel.onButton(panel.buttonId("sus"), true);
-        encoders.pending[2] = +1;
+        // sus tapped: Off -> step 1 -> step 2 (LEDs follow)
+        const int sus = panel.buttonId("row1.sus");
+        panel.onButton(sus, true); panel.onButton(sus, false);
+        panel.onButton(sus, true); panel.onButton(sus, false);
         panel.poll();
-        expect(panel.sustainStep(0) == 3, "EG panel: sus + encoder 3 sets sustain step 3");
-        expect(leds.on[5] && leds.on[7 + 3] && !leds.on[7 + 1],
-               "EG panel: while sus is held only the sustain step is lit");
+        expect(panel.sustainStep(0) == 2 && leds.on[12] && !leds.on[11],
+               "EG panel: tapping sus steps the sustain point");
+
+        // hold sus, turn encoder 5 -> step 5; the release is then not a tap
+        panel.onButton(sus, true);
+        encoders.pending[4] = +1;
+        panel.poll();
+        panel.onButton(sus, false);
+        panel.poll();
+        expect(panel.sustainStep(0) == 5 && leds.on[15] && !leds.on[12],
+               "EG panel: sus + encoder sets that step, release does not step on");
+        expect(params.byId("line1_dcw_rate5")->getNormalized() == 0.5f
+               && params.byId("line1_dcw_level5")->getNormalized() == 0.5f,
+               "EG panel: encoders do not edit values while sus is held");
+        panel.onButton(sus, true);
         encoders.pending[7] = -1;       // the last encoder means Off
         panel.poll();
-        expect(panel.sustainStep(0) == 0, "EG panel: sus + last encoder turns sustain off");
-        panel.onButton(panel.buttonId("sus"), false);
-        const float rateBefore = params.byId("line1_dca_rate3")->getNormalized();
-        expect(rateBefore == 0.5f, "EG panel: encoders do not edit rates while sus is held");
+        panel.onButton(sus, false);
+        panel.poll();
+        expect(panel.sustainStep(0) == 0 && !leds.on[15] && !leds.on[18],
+               "EG panel: sus + last encoder turns sustain off (no LED lit)");
 
-        panel.onButton(panel.buttonId("end"), true);
-        encoders.pending[4] = +1;       // end at step 5
+        // end: hold + encoder 6, tap wraps 8 -> 2, encoder 1 is refused
+        const int end = panel.buttonId("row1.end");
+        panel.onButton(end, true);
+        encoders.pending[5] = +1;
         panel.poll();
-        encoders.pending[8] = +1;       // row 2 encoder 1: no end at step 1
+        panel.onButton(end, false);
         panel.poll();
-        panel.onButton(panel.buttonId("end"), false);
+        expect(panel.endStep(0) == 6 && leds.on[26], "EG panel: end + encoder sets the end step");
+        panel.onButton(end, true);
+        encoders.pending[0] = +1;
         panel.poll();
-        expect(panel.endStep(0) == 5 && panel.endStep(1) == 2,
-               "EG panel: end + encoder sets the end step (never step 1)");
-        expect(leds.on[7 + 5] && leds.on[7 + 1] && !leds.on[7 + 6],
-               "EG panel: step LEDs show the steps up to the end point");
+        panel.onButton(end, false);
+        expect(panel.endStep(0) == 6, "EG panel: an end at step 1 is refused");
+        for(int i = 0; i < 3; i++){ panel.onButton(end, true); panel.onButton(end, false); }
+        panel.poll();
+        expect(panel.endStep(0) == 2 && leds.on[22] && !leds.on[26],
+               "EG panel: tapping end wraps 8 -> 2");
+        expect(panel.endStep(1) == 2 && panel.sustainStep(1) == 0,
+               "EG panel: row 1's points leave row 2 alone");
+
+        // switching the row's EG shows that EG's points (DCA: end 2)
+        panel.onButton(end, true);
+        encoders.pending[3] = +1;       // DCW end at step 4
+        panel.poll();
+        panel.onButton(end, false);
+        panel.poll();
+        panel.onButton(panel.buttonId("row1.dca"), true);
+        panel.poll();
+        expect(leds.on[2] && leds.on[22] && !leds.on[24],
+               "EG panel: sus/end LEDs show the selected EG's points");
+
+        // line select cycles through the four options
+        expect(leds.on[41] && !leds.on[42], "EG panel: line LED shows Line 1");
+        const int line = panel.buttonId("line");
+        for(int i = 0; i < 3; i++) panel.onButton(line, true);
+        panel.poll();
+        expect(panel.lineSelectOption() == 4 && leds.on[44] && !leds.on[41],
+               "EG panel: line button steps to 1+2'");
+        panel.onButton(line, true);
+        expect(panel.lineSelectOption() == 1, "EG panel: line button wraps to Line 1");
 
 #ifdef RTSYNTH_HAVE_PD
         // against the real instrument: the encodings must mean what pd
@@ -1019,19 +1077,24 @@ int main(){
         expect(pdPanel.bind(pd.parameters(), pdError), "EG panel: binds to the pd synth");
         pdPanel.attachEncoder(1, 3, &encoders, 2);
         pdPanel.attachEncoder(1, 6, &encoders, 5);
-        pdPanel.onButton(pdPanel.buttonId("dcw"), true);
-        pdPanel.onButton(pdPanel.buttonId("sus"), true);
+        pdPanel.onButton(pdPanel.buttonId("row1.dcw"), true);
+        pdPanel.onButton(pdPanel.buttonId("row1.sus"), true);
         encoders.pending[2] = +1;
         pdPanel.poll();
-        pdPanel.onButton(pdPanel.buttonId("sus"), false);
-        pdPanel.onButton(pdPanel.buttonId("end"), true);
+        pdPanel.onButton(pdPanel.buttonId("row1.sus"), false);
+        pdPanel.onButton(pdPanel.buttonId("row1.end"), true);
         encoders.pending[5] = +1;
         pdPanel.poll();
-        pdPanel.onButton(pdPanel.buttonId("end"), false);
-        const Parameter* sus = pd.parameters().byId("line1_dcw_sustain");
-        const Parameter* end = pd.parameters().byId("line1_dcw_end");
-        expect(pd.describeValue(*sus) == "Step 3" && pd.describeValue(*end) == "Step 6",
-               "EG panel: sustain/end points decode as pd shows them");
+        pdPanel.onButton(pdPanel.buttonId("row1.end"), false);
+        pd.parameters().byId("line_select")->setNormalized(0.0f);  // Line 1
+        pdPanel.onButton(pdPanel.buttonId("line"), true);
+        pdPanel.onButton(pdPanel.buttonId("line"), true);
+        const Parameter* susParam = pd.parameters().byId("line1_dcw_sustain");
+        const Parameter* endParam = pd.parameters().byId("line1_dcw_end");
+        const Parameter* lineParam = pd.parameters().byId("line_select");
+        expect(pd.describeValue(*susParam) == "Step 3" && pd.describeValue(*endParam) == "Step 6"
+               && pd.describeValue(*lineParam) == "1+1'",
+               "EG panel: sustain/end/line select decode as pd shows them");
 #endif
 
         SineSynthProcessor sine;
@@ -1039,6 +1102,33 @@ int main(){
         std::string missing;
         expect(!unbound.bind(sine.parameters(), missing) && !missing.empty(),
                "EG panel: binding to a synth without EGs names the missing id");
+    }
+
+    // the shipped panel config parses and every role in it is understood
+    {
+        PanelConfig config;
+        std::string error;
+        bool ok = loadPanelConfig(RTSYNTH_SOURCE_DIR "/panels/pd_2line.conf", config, error);
+        Mcp23017Panel hw;
+        EgEditPanel eg;
+        for(uint8_t address : config.expanders) ok = ok && hw.addExpander(address) >= 0;
+        for(const auto& e : config.encoders){
+            int row = 0, step = 0;
+            ok = ok && hw.addEncoder(e.a, e.b) >= 0
+                 && EgEditPanel::parseEncoderRole(e.role, row, step)
+                 && eg.attachEncoder(row, step, nullptr, 0);
+        }
+        for(const auto& b : config.buttons) ok = ok && hw.addButton(b.pin) >= 0 && eg.buttonId(b.role) >= 0;
+        for(const auto& l : config.leds){
+            const int channel = hw.addLed(l.pin, l.activeLow);
+            ok = ok && channel >= 0 && eg.attachLed(l.role, &hw.leds(), channel);
+        }
+        expect(ok && config.encoders.size() == 16 && config.buttons.size() == 9
+               && config.leds.size() == 44,
+               "panels/pd_2line.conf: 16 encoders, 9 buttons, 44 LEDs, all valid");
+        if(!ok){
+            std::printf("       %s %s\n", error.c_str(), hw.lastError().c_str());
+        }
     }
 
     // ControlLoop drains buttons on its own thread's poll

@@ -342,19 +342,27 @@ MIDI CC と取り合いになっても値が飛びません。
 [README_HW.md の Step 7](README_HW.md#8-step-7-エンコーダ-16-個のエディットパネルmcp23017-io-エキスパンダ)。
 
 ```sh
-./build/rtsynth --synth pd --lcd 0x27 --panel panels/pd_2x8.conf
+./build/rtsynth --synth pd --lcd 0x27 --panel panels/pd_2line.conf
 ```
 
-同梱の `panels/pd_2x8.conf` は **8 個 × 2 列**で line1 / line2 の EG を編集する構成です。
+同梱の `panels/pd_2line.conf` は **line1 / line2 にそれぞれ独立した EG エディタ**を持つ構成です
+（エンコーダ 16・スイッチ 9・LED 44）。各行が自分の選択状態を持つので、行 1 で DCW の rate、
+行 2 で DCA の level、のように別々のページを開いておけます。
 
-| 操作 | 結果 |
-|---|---|
-| `dco` / `dcw` / `dca` ボタン | エンコーダが編集する EG を選ぶ（`eg` ボタン 1 個で巡回も可） |
-| `rate` / `level` ボタン | 編集するフィールドを選ぶ（`field` ボタン 1 個でトグルも可） |
-| 行 R のエンコーダ K | `line<R>_<eg>_<rate/level>K` を相対操作 |
-| `sus` を押しながらエンコーダ K | その行の line のサステインポイント = ステップ K（最後のツマミ = Off） |
-| `end` を押しながらエンコーダ K | エンドポイント = ステップ K（2〜8） |
-| LED | 選択中の EG / フィールド、押下中の sus / end。任意で `row<R>.step<K>` のステップ LED（エンドまで点灯、sus/end 押下中はその位置だけ点灯） |
+| 操作（行 R ごと） | 結果 | LED |
+|---|---|---|
+| `rowR.eg` スイッチ | 編集する EG を DCO → DCW → DCA → DCO と巡回 | `rowR.dco/dcw/dca` |
+| `rowR.field` スイッチ | rate ↔ level を切り替え | `rowR.rate/level` |
+| エンコーダ `rowR.K` | `line<R>_<eg>_<rate/level>K` を相対操作（level 8 は pd に無いので無効） | — |
+| `rowR.sus` を**タップ** | サステインポイントを次へ（Off → 1 → … → 7 → Off） | `rowR.sus1`〜`sus8`（Off は全消灯） |
+| `rowR.sus` を**押しながら**エンコーダ K を回す | サステインポイント = ステップ K（8 番目 = Off） | 同上 |
+| `rowR.end` をタップ | エンドポイントを次へ（2 → … → 8 → 2） | `rowR.end2`〜`end8` |
+| `rowR.end` を押しながらエンコーダ K | エンドポイント = ステップ K（2〜8） | 同上 |
+| `line` スイッチ（全体で 1 個） | Line Select を Line 1 → Line 2 → 1+1' → 1+2' と巡回 | `line.1`〜`line.4` |
+
+sus / end の LED は**パラメータの実際の値を常時表示**します（プリセット切替や MIDI CC で
+変わっても追従）。表示しているのはその行で選択中の EG のポイントです。
+`rowR.dco` `rowR.rate` などを**直接選択ボタン**として割り当てることもできます。
 
 設定ファイルの書式（`#` 以降はコメント）:
 
@@ -376,8 +384,8 @@ led     <役割> <ピン> [active-low]
 | 種類 | 役割 |
 |---|---|
 | encoder | `row<R>.<K>`（EG エディタ）、`param:<id>`（固定割当。`--enc` と同じ動作） |
-| button | `dco` `dcw` `dca` `eg` `rate` `level` `field` `sus` `end`（EG エディタ）、`preset-next` `preset-prev` `revert` `panic`（`--button` と同じ） |
-| led | `dco` `dcw` `dca` `rate` `level` `sus` `end`、`row<R>.step<K>` |
+| button | `row<R>.eg` `row<R>.field` `row<R>.sus` `row<R>.end`、直接選択の `row<R>.dco/dcw/dca/rate/level`、全体の `line`（EG エディタ）、`preset-next` `preset-prev` `revert` `panic`（`--button` と同じ） |
+| led | `row<R>.dco/dcw/dca` `row<R>.rate/level` `row<R>.sus<K>` `row<R>.end<K>` `line.<K>` |
 
 - **GPA7 / GPB7 は出力専用**（現行 MCP23017 の仕様）なので、入力を割り当てると起動時に
   エラーになります。LED に使ってください。同じピンの二重割当・未宣言のチップも行番号付きで
@@ -692,7 +700,7 @@ PipeWire、プラグインラッパ等）への移植ではこの層だけを書
 | `I2cBus.{hpp,cpp}` | I2C バスのレジスタ読み書き。`I2C_RDWR` で転送ごとにアドレスを指定するので 1 本の fd で複数チップを扱える。読みはレジスタ指定と読出しを 1 トランザクションで行う |
 | `Mcp23017Panel.{hpp,cpp}` | MCP23017（最大 8 個）上のエンコーダ・ボタン・LED。走査スレッドが全チップの GPIO を読み、`encoders()`（`RelativeControlInput`）/ `buttons()`（`ButtonInput`）/ `leds()`（`LedOutput`）として公開する。INT 線があれば変化時のみ読む。`processSnapshot()` でハード無しに単体テスト可能 |
 | `PanelConfig.hpp` | `--panel` 設定ファイルのパーサ（構文のみ。役割の解釈は `main.cpp`） |
-| `EgEditPanel.hpp` | 「何を編集中か」を持つページ切替ロジック（`ControlSurface`）。行 = line、列 = EG ステップ、ボタンで EG / rate・level を選び、sus/end 押下中はポイント設定、LED に選択状態を出す。ハード非依存（入力と LED はインタフェース越し）で、`ControlLoop` のスレッドだけで動くのでロック不要 |
+| `EgEditPanel.hpp` | 「何を編集中か」を持つページ切替ロジック（`ControlSurface`）。行 = line、列 = EG ステップで、**行ごとに独立した選択状態**を持つ。スイッチで EG / rate・level を巡回、sus/end はタップで巡回・押しながら回して直接指定、Line Select の巡回。LED は選択状態と sus/end/line select の実際の値を表示。ハード非依存（入力と LED はインタフェース越し）で、`ControlLoop` のスレッドだけで動くのでロック不要 |
 | `ParameterWatcher.hpp` | UI スレッド（LCD・コンソール等）向けの変更検知。全パラメータの変更カウンタをポーリングし「前回から変わったパラメータ」だけを報告 |
 | `ParameterDisplay.hpp` | 表示バックエンドの抽象（`showParameter` / `showPreset`）と、`-v` 用のコンソール実装。**表示先を増やすのはここを実装するだけ**。1 行ぶんのデータは `DisplayLine`（ID / 表示名 / 整形済みの値 / きっかけ）で、16x2 LCD が自分で配置できるようフィールドを分けてある |
 | `LcdParameterDisplay.hpp` | `DisplayLine` をキャラクタ表示に割り付ける `ParameterDisplay` 実装（上段=表示名、下段=値、プリセットは `PRESET n`/名前）。桁数に合わせて切り詰め、**内容が変わった行だけ**書き直すので待機中の I2C トラフィックはゼロ |
@@ -737,7 +745,7 @@ RT スレッドの規約はひとつだけです: **アロケーション・ロ�
 ポリフォニー上限・pd 音源と CC マッピング・**全ファクトリプリセットが実際に発音するか**・
 **Program Change による切替と編集内容の保持**・**`ParameterMonitor` の表示内容**・
 エンコーダの直交デコード・**MCP23017 パネルのデコード／デバウンス／ピン割当検査・
-設定ファイルのパース・EG エディットパネルのページ切替と sus/end 設定**・`ParameterWatcher`・`MidiStreamParser` の各ケース・
+設定ファイルのパース・EG エディットパネルの行ごとのページ切替と sus/end/line select・同梱パネル設定の全役割の検証**・`ParameterWatcher`・`MidiStreamParser` の各ケース・
 SPSC キューの 20 万イベントマルチスレッドストレステスト。CI にそのまま載せられます。
 
 ## 2.4 PD シンセの取り込み方

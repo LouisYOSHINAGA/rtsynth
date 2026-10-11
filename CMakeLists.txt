@@ -71,6 +71,9 @@ add_executable(rtsynth_selftest tests/selftest.cpp
     src/host/Mcp23017Panel.cpp
 )
 target_link_libraries(rtsynth_selftest PRIVATE rtsynth_core Threads::Threads)
+# lets the test load the shipped panels/*.conf
+target_compile_definitions(rtsynth_selftest PRIVATE
+    RTSYNTH_SOURCE_DIR="${CMAKE_CURRENT_SOURCE_DIR}")
 if(TARGET rtsynth_pd)
     target_link_libraries(rtsynth_selftest PRIVATE rtsynth_pd)
 endif()
