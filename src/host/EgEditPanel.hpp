@@ -42,11 +42,10 @@ struct EgEditSpec {
 //             (or dco / dcw / dca to pick one directly)
 //     button  field        rate <-> level                LEDs: rate level
 //             (or rate / level to pick one directly)
-//     button  sus          tap: next sustain point (Off, 1..7, Off, ...)
-//                          hold + turn encoder K: sustain at step K
-//                          (the last encoder = Off)      LEDs: sus1..sus8
-//     button  end          tap: next end point (2..8, 2, ...)
-//                          hold + turn encoder K: end at step K
+//     button  sus          next sustain point: Off, 1, ..., 7, Off, ...
+//                                                        LEDs: sus1..sus7
+//                                                        (all dark = Off)
+//     button  end          next end point: 2, ..., 8, 2, ...
 //                                                        LEDs: end2..end8
 //   global
 //     button  line         Line 1 -> Line 2 -> 1+1' -> 1+2' -> ...
@@ -58,9 +57,9 @@ struct EgEditSpec {
 // absent, so a smaller panel (no direct dco button, no end LEDs, ...)
 // needs no code change.
 //
-// The sus/end LEDs show the EG's real point at all times — it is read
+// The sus/end/line LEDs show the real value at all times — it is read
 // back from the parameter, so a preset change or a MIDI CC shows up too.
-// Level 8 and sustain 8 do not exist in pd: those encoders/LEDs stay idle.
+// Level 8 does not exist in pd: encoder 8 is idle on the level page.
 //
 // Runs entirely on the ControlLoop thread (poll() as a ControlSurface,
 // onButton() from the loop's button drain), so it needs no locking; the
@@ -161,6 +160,7 @@ public:
                 return false;
             }
             leds_.push_back(led);
+            rememberOutput(output);
             return true;
         }
         int row = 0;
@@ -173,11 +173,13 @@ public:
             led.kind = LedKind::Field;
             led.index = (name == "rate")? 0 : 1;
         }else if(name.rfind("sus", 0) == 0 && parseNumber(name.substr(3), led.index)){
+            // one LED per sustainable step; Off is "all dark"
             led.kind = LedKind::Sustain;
-            if(led.index < 1 || led.index > spec_.stepsPerRow) return false;
+            if(led.index < 1 || led.index >= spec_.sustainOptions) return false;
         }else if(name.rfind("end", 0) == 0 && parseNumber(name.substr(3), led.index)){
             led.kind = LedKind::End;
-            if(led.index < 1 || led.index > spec_.stepsPerRow) return false;
+            if(led.index < spec_.endFirstStep
+               || led.index >= spec_.endFirstStep + spec_.endOptions) return false;
         }else{
             const auto eg = std::find(spec_.egs.begin(), spec_.egs.end(), name);
             if(eg == spec_.egs.end()){
@@ -187,6 +189,7 @@ public:
             led.index = static_cast<int>(eg - spec_.egs.begin());
         }
         leds_.push_back(led);
+        rememberOutput(output);
         return true;
     }
 
@@ -209,23 +212,8 @@ public:
         }
         Row& row = rows_[static_cast<size_t>(rowIndex)];
 
-        if(kind == kButtonSustain || kind == kButtonEnd){
-            const bool sustain = (kind == kButtonSustain);
-            bool& held = sustain? row.sustainHeld : row.endHeld;
-            if(pressed){
-                held = true;
-                row.turnedWhileHeld = false;
-            }else if(held){
-                held = false;
-                // a tap (no encoder turned meanwhile) steps to the next point
-                if(!row.turnedWhileHeld){
-                    sustain? cycleSustain(rowIndex) : cycleEnd(rowIndex);
-                }
-            }
-            return;
-        }
         if(!pressed){
-            return;  // the selection buttons act on the press
+            return;  // every button acts on the press
         }
         const int egCount = static_cast<int>(spec_.egs.size());
         if(kind >= kButtonEgBase && kind < kButtonEgBase + egCount){
@@ -238,6 +226,10 @@ public:
             row.field = Field::Level;
         }else if(kind == kButtonFieldToggle){
             row.field = (row.field == Field::Rate)? Field::Level : Field::Rate;
+        }else if(kind == kButtonSustain){
+            cycleSustain(rowIndex);
+        }else if(kind == kButtonEnd){
+            cycleEnd(rowIndex);
         }
     }
 
@@ -247,14 +239,7 @@ public:
             if(delta == 0){
                 continue;
             }
-            Row& row = rows_[static_cast<size_t>(slot.row)];
-            if(row.sustainHeld){
-                setSustainStep(slot.row, slot.step);
-                row.turnedWhileHeld = true;
-            }else if(row.endHeld){
-                setEndStep(slot.row, slot.step);
-                row.turnedWhileHeld = true;
-            }else if(Parameter* p = target(slot.row, slot.step)){
+            if(Parameter* p = target(slot.row, slot.step)){
                 p->setNormalized(p->getNormalized()
                                  + static_cast<float>(delta) * stepSize_);
             }
@@ -321,9 +306,6 @@ private:
         std::vector<EgParams> egs;
         int eg = 0;
         Field field = Field::Rate;
-        bool sustainHeld = false;
-        bool endHeld = false;
-        bool turnedWhileHeld = false;
     };
     struct EncoderSlot {
         int row;    // 0-based
@@ -381,25 +363,6 @@ private:
         return r.egs[static_cast<size_t>(r.eg)];
     }
 
-    void setSustainStep(int row, int step){
-        Parameter* p = egParams(row).sustain;
-        if(p == nullptr){
-            return;
-        }
-        // the encoders past the last sustainable step all mean "Off"
-        const int option = (step < spec_.sustainOptions)? step : 0;
-        p->setNormalized(optionValue(option, spec_.sustainOptions));
-    }
-
-    void setEndStep(int row, int step){
-        Parameter* p = egParams(row).end;
-        const int option = step - spec_.endFirstStep;
-        if(p == nullptr || option < 0 || option >= spec_.endOptions){
-            return;  // no such end point (pd's EG cannot end at step 1)
-        }
-        p->setNormalized(optionValue(option, spec_.endOptions));
-    }
-
     void cycleSustain(int row){
         Parameter* p = egParams(row).sustain;
         if(p != nullptr){
@@ -441,12 +404,25 @@ private:
         return false;
     }
 
+    void rememberOutput(LedOutput* output){
+        if(std::find(outputs_.begin(), outputs_.end(), output) == outputs_.end()){
+            outputs_.push_back(output);
+        }
+    }
+
     void updateLeds(){
+        bool changed = false;
         for(LedSlot& led : leds_){
             const int wanted = ledWanted(led)? 1 : 0;
             if(wanted != led.shown){
                 led.output->setLed(led.channel, wanted != 0);
                 led.shown = wanted;
+                changed = true;
+            }
+        }
+        if(changed){
+            for(LedOutput* output : outputs_){
+                output->flush();   // one transfer per output per tick
             }
         }
     }
@@ -456,6 +432,7 @@ private:
     Parameter* lineSelect_ = nullptr;
     std::vector<EncoderSlot> encoders_;
     std::vector<LedSlot> leds_;
+    std::vector<LedOutput*> outputs_;
     float stepSize_ = 0.01f;
 };
 

@@ -24,22 +24,35 @@ namespace rtsynth {
 //   encoder-step 0.01            normalized change per step
 //   debounce 5                   button debounce, ms
 //   pullups on|off               internal pull-ups on encoder/button pins
+//   shift-register /dev/spidev0.1 6
+//                                a chain of 6 74HC595 for LEDs (optional)
 //
 //   encoder <role> <pinA> <pinB>
 //   button  <role> <pin>
 //   led     <role> <pin> [active-low]
 //
-// A pin is <expander>.<port><bit>, e.g. 0.A0, 2.B5. The roles say what a
+// A pin is <expander>.<port><bit>, e.g. 0.A0, 2.B5; an LED may also sit on
+// the shift-register chain as sr<chip>.<bit>, e.g. sr2.5 (bit 0 = QA). The
+// roles say what a
 // control does; who understands them is decided by main (EgEditPanel's
 // rowR.K / dco / sus / ..., the panel button actions, param:<id>). The
 // parser only checks the syntax, so a typo is reported with its line.
 struct PanelConfig {
     struct Encoder { std::string role; ExpanderPin a, b; int line = 0; };
     struct Button  { std::string role; ExpanderPin pin; int line = 0; };
-    struct Led     { std::string role; ExpanderPin pin; bool activeLow = false; int line = 0; };
+    struct Led {
+        std::string role;
+        ExpanderPin pin;          // when !onShiftRegister
+        int shiftChannel = -1;    // chip * 8 + bit, when onShiftRegister
+        bool onShiftRegister = false;
+        bool activeLow = false;
+        int line = 0;
+    };
 
     Mcp23017Panel::Options options;
     std::vector<uint8_t> expanders;
+    std::string shiftDevice;          // "" = no 74HC595 chain
+    int shiftChips = 0;
     float encoderStep = 0.01f;
     std::vector<Encoder> encoders;
     std::vector<Button> buttons;
@@ -63,6 +76,24 @@ inline bool parseExpanderPin(const std::string& text, ExpanderPin& out){
     }
     out.chip = std::stoi(chip);
     out.pin = (port == 'B'? 8 : 0) + (bit - '0');
+    return true;
+}
+
+// "sr2.5" -> 21
+inline bool parseShiftPin(const std::string& text, int& channel){
+    if(text.size() < 4 || text.compare(0, 2, "sr") != 0){
+        return false;
+    }
+    const size_t dot = text.find('.');
+    if(dot == std::string::npos || dot + 2 != text.size() || dot == 2){
+        return false;
+    }
+    const std::string chip = text.substr(2, dot - 2);
+    const char bit = text[dot + 1];
+    if(chip.find_first_not_of("0123456789") != std::string::npos || bit < '0' || bit > '7'){
+        return false;
+    }
+    channel = std::stoi(chip) * 8 + (bit - '0');
     return true;
 }
 
@@ -112,6 +143,12 @@ inline bool parsePanelConfig(std::istream& in, PanelConfig& config, std::string&
                 config.options.debounceMs = std::stoi(w[1]);
             }else if(key == "pullups" && w.size() == 2 && (w[1] == "on" || w[1] == "off")){
                 config.options.pullups = (w[1] == "on");
+            }else if(key == "shift-register" && w.size() == 3){
+                config.shiftDevice = w[1];
+                config.shiftChips = std::stoi(w[2]);
+                if(config.shiftChips < 1){
+                    return fail("a shift-register chain needs at least one chip");
+                }
             }else if(key == "encoder" && w.size() == 4){
                 PanelConfig::Encoder e{w[1], {}, {}, lineNo};
                 if(!pin(w[2], e.a) || !pin(w[3], e.b)){
@@ -125,9 +162,13 @@ inline bool parsePanelConfig(std::istream& in, PanelConfig& config, std::string&
                 }
                 config.buttons.push_back(b);
             }else if(key == "led" && (w.size() == 3 || w.size() == 4)){
-                PanelConfig::Led l{w[1], {}, false, lineNo};
-                if(!pin(w[2], l.pin)){
-                    return fail("bad pin (expected e.g. 0.A0)");
+                PanelConfig::Led l;
+                l.role = w[1];
+                l.line = lineNo;
+                if(parseShiftPin(w[2], l.shiftChannel)){
+                    l.onShiftRegister = true;
+                }else if(!pin(w[2], l.pin)){
+                    return fail("bad pin (expected e.g. 0.A0 or sr0.3)");
                 }
                 if(w.size() == 4){
                     if(w[3] != "active-low"){
@@ -146,6 +187,25 @@ inline bool parsePanelConfig(std::istream& in, PanelConfig& config, std::string&
     if(config.expanders.empty()){
         error = "no 'expander' declared";
         return false;
+    }
+    std::vector<bool> shiftUsed(static_cast<size_t>(config.shiftChips) * 8, false);
+    for(const PanelConfig::Led& l : config.leds){
+        if(l.onShiftRegister && l.shiftChannel < config.shiftChips * 8){
+            if(shiftUsed[static_cast<size_t>(l.shiftChannel)]){
+                error = "line " + std::to_string(l.line) + ": pin "
+                      + "sr" + std::to_string(l.shiftChannel / 8) + "."
+                      + std::to_string(l.shiftChannel % 8) + " is used twice";
+                return false;
+            }
+            shiftUsed[static_cast<size_t>(l.shiftChannel)] = true;
+        }
+        if(l.onShiftRegister && l.shiftChannel >= config.shiftChips * 8){
+            error = "line " + std::to_string(l.line) + ": LED on "
+                  + "sr" + std::to_string(l.shiftChannel / 8)
+                  + ", but the shift-register chain has "
+                  + std::to_string(config.shiftChips) + " chip(s)";
+            return false;
+        }
     }
     return true;
 }

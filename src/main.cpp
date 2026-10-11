@@ -30,6 +30,7 @@
 #include "host/ParameterDisplay.hpp"
 #include "host/ParameterMonitor.hpp"
 #include "host/RawMidiInput.hpp"
+#include "host/ShiftRegisterLeds.hpp"
 #include "host/StandaloneHost.hpp"
 #include "synth/SineSynthProcessor.hpp"
 #ifdef RTSYNTH_HAVE_PD
@@ -407,11 +408,12 @@ bool parseArguments(int argc, char* argv[], CliOptions& cli, bool& exitRequested
 //   button   rowR.eg/field/sus/end/dco/.../rate/level, line -> EgEditPanel
 //            preset-next/preset-prev/revert/panic           -> host action
 //   led      rowR.dco/.../rate/level/susK/endK, line.K      -> EgEditPanel
+//            (on an expander pin or on the 74HC595 chain: sr<chip>.<bit>)
 //
 // panelButtonIds[i] is the EgEditPanel id of expander button i, or -1
 // when panelButtonActions[i] holds a host action instead.
 bool setUpPanel(const std::string& path, rtsynth::Mcp23017Panel& panel,
-                rtsynth::EgEditPanel& egPanel, rtsynth::ControlLoop& controlLoop,
+                rtsynth::ShiftRegisterLeds& shiftLeds, rtsynth::EgEditPanel& egPanel, rtsynth::ControlLoop& controlLoop,
                 rtsynth::Processor& synth,
                 const std::function<rtsynth::Parameter*(const std::string&)>& findParameter,
                 const std::function<bool(const std::string&, const std::string&)>& checkAction,
@@ -490,17 +492,28 @@ bool setUpPanel(const std::string& path, rtsynth::Mcp23017Panel& panel,
         panelButtonActions.push_back(id < 0? b.role : "");
     }
 
+    shiftLeds.setChainLength(config.shiftChips);
     for(const auto& l : config.leds){
-        const int channel = panel.addLed(l.pin, l.activeLow);
-        if(channel < 0){
-            return fail(l.line, panel.lastError());
+        rtsynth::LedOutput* output = &shiftLeds;
+        int channel = l.shiftChannel;
+        if(l.onShiftRegister){
+            shiftLeds.setActiveLow(channel, l.activeLow);
+        }else{
+            output = &panel.leds();
+            channel = panel.addLed(l.pin, l.activeLow);
+            if(channel < 0){
+                return fail(l.line, panel.lastError());
+            }
         }
-        if(!egPanel.attachLed(l.role, &panel.leds(), channel)){
+        if(!egPanel.attachLed(l.role, output, channel)){
             return fail(l.line, "unknown LED role '" + l.role + "'");
         }
     }
 
     if(!panel.open(config.options)){
+        return false;
+    }
+    if(config.shiftChips > 0 && !shiftLeds.open(config.shiftDevice)){
         return false;
     }
     if(usesEgPanel){
@@ -509,6 +522,10 @@ bool setUpPanel(const std::string& path, rtsynth::Mcp23017Panel& panel,
     std::cout << "Panel: " << panel.numExpanders() << " MCP23017 on "
               << config.options.busPath << ", " << config.encoders.size() << " encoders, "
               << config.buttons.size() << " buttons, " << config.leds.size() << " LEDs"
+              << (config.shiftChips > 0
+                      ? " (" + std::to_string(config.shiftChips) + " x 74HC595 on "
+                        + config.shiftDevice + ")"
+                      : std::string())
               << (config.options.interruptLine >= 0
                       ? ", interrupt on GPIO" + std::to_string(config.options.interruptLine)
                       : ", polled at " + std::to_string(config.options.scanRateHz) + " Hz")
@@ -640,6 +657,7 @@ int main(int argc, char* argv[]){
     rtsynth::GpioEncoderInput encoders;        // encoders on Pi GPIO (relative)
     rtsynth::GpioButtonInput buttons;          // buttons on Pi GPIO
     rtsynth::Mcp23017Panel panel;              // encoders/buttons/LEDs on expanders
+    rtsynth::ShiftRegisterLeds shiftLeds;      // LEDs on a 74HC595 chain
     rtsynth::EgEditPanel egPanel;              // what the expander encoders edit
     std::vector<std::string> gpioButtonActions;
     std::vector<std::string> panelButtonActions;  // "" = an EgEditPanel role
@@ -735,7 +753,7 @@ int main(int argc, char* argv[]){
     }
 
     if(!cli.panelConfig.empty()){
-        if(!setUpPanel(cli.panelConfig, panel, egPanel, controlLoop, *synth, findParameter,
+        if(!setUpPanel(cli.panelConfig, panel, shiftLeds, egPanel, controlLoop, *synth, findParameter,
                        checkAction, panelButtonActions, panelButtonIds)){
             return 1;
         }
@@ -931,6 +949,7 @@ int main(int argc, char* argv[]){
         lcdDisplay.showStatus("rtsynth", "stopped");
     }
     controlLoop.stop();
+    shiftLeds.close();
     panel.close();
     encoders.close();
     host.stop();

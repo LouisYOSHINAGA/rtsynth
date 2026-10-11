@@ -21,6 +21,7 @@
 #include "../src/host/Mcp23017Panel.hpp"
 #include "../src/host/PanelConfig.hpp"
 #include "../src/host/QuadratureDecoder.hpp"
+#include "../src/host/ShiftRegisterLeds.hpp"
 #include "../src/host/LcdParameterDisplay.hpp"
 #include "../src/host/ParameterDisplay.hpp"
 #include "../src/host/ParameterMonitor.hpp"
@@ -957,11 +958,11 @@ int main(){
             }
         }
         // LEDs for row 1: 0 dco 1 dcw 2 dca 3 rate 4 level,
-        // 10+K sus K (1..8), 20+K end K (2..8); row 2 dco = 5; line.K = 40+K
+        // 10+K sus K (1..7), 20+K end K (2..8); row 2 dco = 5; line.K = 40+K
         const char* modeLeds[] = {"dco", "dcw", "dca", "rate", "level"};
         for(int i = 0; i < 5; i++) panel.attachLed(std::string("row1.") + modeLeds[i], &leds, i);
         panel.attachLed("row2.dco", &leds, 5);
-        for(int k = 1; k <= 8; k++) panel.attachLed("row1.sus" + std::to_string(k), &leds, 10 + k);
+        for(int k = 1; k <= 7; k++) panel.attachLed("row1.sus" + std::to_string(k), &leds, 10 + k);
         for(int k = 2; k <= 8; k++) panel.attachLed("row1.end" + std::to_string(k), &leds, 20 + k);
         for(int k = 1; k <= 4; k++) panel.attachLed("line." + std::to_string(k), &leds, 40 + k);
         expect(!panel.attachLed("row1.bogus", &leds, 60) && !panel.attachLed("row3.dco", &leds, 60)
@@ -1000,58 +1001,50 @@ int main(){
         encoders.pending[7] = +1;       // row 1, step 8: level 8 does not exist
         panel.poll();                   // must simply do nothing
 
-        // sus tapped: Off -> step 1 -> step 2 (LEDs follow)
+        // sus: each press steps Off -> 1 -> ... -> 7 -> Off; LED = the step
         const int sus = panel.buttonId("row1.sus");
         panel.onButton(sus, true); panel.onButton(sus, false);
         panel.onButton(sus, true); panel.onButton(sus, false);
         panel.poll();
         expect(panel.sustainStep(0) == 2 && leds.on[12] && !leds.on[11],
-               "EG panel: tapping sus steps the sustain point");
+               "EG panel: the sus button steps the sustain point");
+        for(int i = 0; i < 5; i++){ panel.onButton(sus, true); panel.onButton(sus, false); }
+        panel.poll();
+        expect(panel.sustainStep(0) == 7 && leds.on[17] && !leds.on[12],
+               "EG panel: sus reaches step 7");
+        panel.onButton(sus, true);
+        panel.poll();
+        bool anySus = false;
+        for(int k = 1; k <= 7; k++) anySus |= leds.on[10 + k];
+        expect(panel.sustainStep(0) == 0 && !anySus,
+               "EG panel: after step 7 sustain is Off and every sus LED is dark");
+        expect(!panel.attachLed("row1.sus8", &leds, 60) && !panel.attachLed("row1.end1", &leds, 60),
+               "EG panel: there is no sus8 / end1 LED");
 
-        // hold sus, turn encoder 5 -> step 5; the release is then not a tap
+        // encoders keep editing while the sus/end buttons are in use
         panel.onButton(sus, true);
         encoders.pending[4] = +1;
         panel.poll();
         panel.onButton(sus, false);
-        panel.poll();
-        expect(panel.sustainStep(0) == 5 && leds.on[15] && !leds.on[12],
-               "EG panel: sus + encoder sets that step, release does not step on");
-        expect(params.byId("line1_dcw_rate5")->getNormalized() == 0.5f
-               && params.byId("line1_dcw_level5")->getNormalized() == 0.5f,
-               "EG panel: encoders do not edit values while sus is held");
-        panel.onButton(sus, true);
-        encoders.pending[7] = -1;       // the last encoder means Off
-        panel.poll();
-        panel.onButton(sus, false);
-        panel.poll();
-        expect(panel.sustainStep(0) == 0 && !leds.on[15] && !leds.on[18],
-               "EG panel: sus + last encoder turns sustain off (no LED lit)");
+        expect(std::abs(params.byId("line1_dcw_level5")->getNormalized() - 0.51f) < 1e-4f
+               && panel.sustainStep(0) == 1,
+               "EG panel: encoders are not tied to the sus button");
 
-        // end: hold + encoder 6, tap wraps 8 -> 2, encoder 1 is refused
+        // end: 2 -> 3 ... -> 8 -> 2
         const int end = panel.buttonId("row1.end");
-        panel.onButton(end, true);
-        encoders.pending[5] = +1;
+        for(int i = 0; i < 4; i++) panel.onButton(end, true);
         panel.poll();
-        panel.onButton(end, false);
-        panel.poll();
-        expect(panel.endStep(0) == 6 && leds.on[26], "EG panel: end + encoder sets the end step");
-        panel.onButton(end, true);
-        encoders.pending[0] = +1;
-        panel.poll();
-        panel.onButton(end, false);
-        expect(panel.endStep(0) == 6, "EG panel: an end at step 1 is refused");
-        for(int i = 0; i < 3; i++){ panel.onButton(end, true); panel.onButton(end, false); }
+        expect(panel.endStep(0) == 6 && leds.on[26] && !leds.on[22],
+               "EG panel: the end button steps the end point");
+        for(int i = 0; i < 3; i++) panel.onButton(end, true);
         panel.poll();
         expect(panel.endStep(0) == 2 && leds.on[22] && !leds.on[26],
-               "EG panel: tapping end wraps 8 -> 2");
+               "EG panel: end wraps 8 -> 2");
         expect(panel.endStep(1) == 2 && panel.sustainStep(1) == 0,
                "EG panel: row 1's points leave row 2 alone");
 
         // switching the row's EG shows that EG's points (DCA: end 2)
-        panel.onButton(end, true);
-        encoders.pending[3] = +1;       // DCW end at step 4
-        panel.poll();
-        panel.onButton(end, false);
+        for(int i = 0; i < 2; i++) panel.onButton(end, true);   // DCW end 4
         panel.poll();
         panel.onButton(panel.buttonId("row1.dca"), true);
         panel.poll();
@@ -1075,17 +1068,11 @@ int main(){
         EgEditPanel pdPanel;
         std::string pdError;
         expect(pdPanel.bind(pd.parameters(), pdError), "EG panel: binds to the pd synth");
-        pdPanel.attachEncoder(1, 3, &encoders, 2);
-        pdPanel.attachEncoder(1, 6, &encoders, 5);
         pdPanel.onButton(pdPanel.buttonId("row1.dcw"), true);
-        pdPanel.onButton(pdPanel.buttonId("row1.sus"), true);
-        encoders.pending[2] = +1;
-        pdPanel.poll();
-        pdPanel.onButton(pdPanel.buttonId("row1.sus"), false);
-        pdPanel.onButton(pdPanel.buttonId("row1.end"), true);
-        encoders.pending[5] = +1;
-        pdPanel.poll();
-        pdPanel.onButton(pdPanel.buttonId("row1.end"), false);
+        pd.parameters().byId("line1_dcw_sustain")->setNormalized(0.0f);  // Off
+        pd.parameters().byId("line1_dcw_end")->setNormalized(0.0f);      // step 2
+        for(int i = 0; i < 3; i++) pdPanel.onButton(pdPanel.buttonId("row1.sus"), true);
+        for(int i = 0; i < 4; i++) pdPanel.onButton(pdPanel.buttonId("row1.end"), true);
         pd.parameters().byId("line_select")->setNormalized(0.0f);  // Line 1
         pdPanel.onButton(pdPanel.buttonId("line"), true);
         pdPanel.onButton(pdPanel.buttonId("line"), true);
@@ -1119,16 +1106,52 @@ int main(){
                  && eg.attachEncoder(row, step, nullptr, 0);
         }
         for(const auto& b : config.buttons) ok = ok && hw.addButton(b.pin) >= 0 && eg.buttonId(b.role) >= 0;
+        ShiftRegisterLeds chain;
+        chain.setChainLength(config.shiftChips);
         for(const auto& l : config.leds){
-            const int channel = hw.addLed(l.pin, l.activeLow);
-            ok = ok && channel >= 0 && eg.attachLed(l.role, &hw.leds(), channel);
+            const int channel = l.onShiftRegister? l.shiftChannel : hw.addLed(l.pin, l.activeLow);
+            ok = ok && channel >= 0
+                 && eg.attachLed(l.role, l.onShiftRegister? static_cast<LedOutput*>(&chain)
+                                                          : &hw.leds(), channel);
         }
         expect(ok && config.encoders.size() == 16 && config.buttons.size() == 9
-               && config.leds.size() == 44,
-               "panels/pd_2line.conf: 16 encoders, 9 buttons, 44 LEDs, all valid");
+               && config.leds.size() == 42 && config.expanders.size() == 3
+               && config.shiftChips == 6,
+               "panels/pd_2line.conf: 16 encoders, 9 buttons, 42 LEDs, all valid");
         if(!ok){
             std::printf("       %s %s\n", error.c_str(), hw.lastError().c_str());
         }
+    }
+
+    // 74HC595 chain: frame order and polarity, offline
+    {
+        ShiftRegisterLeds chain;
+        chain.setChainLength(3);
+        chain.setActiveLow(17, true);       // sr2.1
+        chain.setLed(0, true);              // sr0.QA
+        chain.setLed(15, true);             // sr1.QH
+        const std::vector<uint8_t> frame = chain.frame();
+        expect(frame.size() == 3 && frame[0] == 0x02 && frame[1] == 0x80 && frame[2] == 0x01,
+               "595 chain: last chip first, QA = bit 0, active-low inverted");
+        chain.setLed(0, false);
+        chain.setLed(17, true);
+        expect(chain.frame()[0] == 0x00 && chain.frame()[2] == 0x00,
+               "595 chain: LEDs switch off, an active-low LED on drives low");
+
+        std::istringstream text("expander 0x20\nshift-register /dev/spidev0.1 2\n"
+                                "led a sr1.7\nled b 0.B7\n");
+        PanelConfig config;
+        std::string error;
+        expect(parsePanelConfig(text, config, error) && config.leds[0].onShiftRegister
+               && config.leds[0].shiftChannel == 15 && !config.leds[1].onShiftRegister,
+               "panel config: sr pins and expander pins for LEDs");
+        std::istringstream beyond("expander 0x20\nshift-register /dev/spidev0.1 1\nled a sr1.0\n");
+        PanelConfig c2;
+        expect(!parsePanelConfig(beyond, c2, error) && error.rfind("line 3", 0) == 0,
+               "panel config: an LED past the end of the chain is refused");
+        std::istringstream twice("expander 0x20\nshift-register x 1\nled a sr0.0\nled b sr0.0\n");
+        PanelConfig c3;
+        expect(!parsePanelConfig(twice, c3, error), "panel config: an sr pin used twice is refused");
     }
 
     // ControlLoop drains buttons on its own thread's poll

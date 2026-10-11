@@ -52,6 +52,7 @@ add_executable(rtsynth
     src/host/Mcp3008Input.cpp
     src/host/RawMidiInput.cpp
     src/host/RtAudioOutput.cpp
+    src/host/ShiftRegisterLeds.cpp
     src/host/RtMidiInput.cpp
     src/host/StandaloneHost.cpp
 )
@@ -69,6 +70,7 @@ find_package(Threads REQUIRED)
 add_executable(rtsynth_selftest tests/selftest.cpp
     src/host/I2cBus.cpp
     src/host/Mcp23017Panel.cpp
+    src/host/ShiftRegisterLeds.cpp
 )
 target_link_libraries(rtsynth_selftest PRIVATE rtsynth_core Threads::Threads)
 # lets the test load the shipped panels/*.conf

@@ -334,35 +334,33 @@ EC11 等を GPIO に直結できます。A/B 端子を任意の GPIO へ、C（�
 専用スレッドで直交デコードします。ポット（絶対値）と違い「現在値からの相対操作」なので、
 MIDI CC と取り合いになっても値が飛びません。
 
-### エンコーダ 16 個のエディットパネル（MCP23017 I/O エキスパンダ）
+### エンコーダ 16 個のエディットパネル（MCP23017 ＋ 74HC595）
 
-エンコーダ・ボタン・LED を **I2C の I/O エキスパンダ MCP23017**（16 ピン、1 バスに最大 8 個）に
-載せ、**設定ファイル 1 枚**で配置と役割を決めます。Pi の GPIO を消費せず（I2C は LCD と共用）、
+エンコーダ・ボタンを **I2C の I/O エキスパンダ MCP23017**（16 ピン、1 バスに最大 8 個）に、
+LED を **SPI のシフトレジスタ 74HC595**（数珠つなぎ）か MCP23017 の空きピンに載せ、**設定ファイル 1 枚**で配置と役割を決めます。Pi 側は I2C（LCD と共用）と SPI（MCP3008 と共用、CE1）だけで済み、
 ツマミを増やすのも設定ファイルの追記だけです。配線は
-[README_HW.md の Step 7](README_HW.md#8-step-7-エンコーダ-16-個のエディットパネルmcp23017-io-エキスパンダ)。
+[README_HW.md の Step 7](README_HW.md#8-step-7-エンコーダ-16-個のエディットパネルmcp23017--74hc595)。
 
 ```sh
 ./build/rtsynth --synth pd --lcd 0x27 --panel panels/pd_2line.conf
 ```
 
 同梱の `panels/pd_2line.conf` は **line1 / line2 にそれぞれ独立した EG エディタ**を持つ構成です
-（エンコーダ 16・スイッチ 9・LED 44）。各行が自分の選択状態を持つので、行 1 で DCW の rate、
-行 2 で DCA の level、のように別々のページを開いておけます。
+（エンコーダ 16・スイッチ 9・LED 42。入力は MCP23017 × 3、LED は 74HC595 × 6）。
+各行が自分の選択状態を持つので、行 1 で DCW の rate、行 2 で DCA の level、のように
+別々のページを開いておけます。
 
-| 操作（行 R ごと） | 結果 | LED |
+| スイッチ / ツマミ（行 R ごと） | 押すたびに / 回すと | LED |
 |---|---|---|
-| `rowR.eg` スイッチ | 編集する EG を DCO → DCW → DCA → DCO と巡回 | `rowR.dco/dcw/dca` |
-| `rowR.field` スイッチ | rate ↔ level を切り替え | `rowR.rate/level` |
+| `rowR.eg` | 編集する EG を DCO → DCW → DCA → DCO | `rowR.dco/dcw/dca` |
+| `rowR.field` | rate ↔ level | `rowR.rate/level` |
+| `rowR.sus` | サステインポイントを Off → 1 → … → 7 → Off | `rowR.sus1`〜`sus7`（Off は全消灯） |
+| `rowR.end` | エンドポイントを 2 → … → 8 → 2 | `rowR.end2`〜`end8` |
+| `line`（全体で 1 個） | Line Select を Line 1 → Line 2 → 1+1' → 1+2' | `line.1`〜`line.4` |
 | エンコーダ `rowR.K` | `line<R>_<eg>_<rate/level>K` を相対操作（level 8 は pd に無いので無効） | — |
-| `rowR.sus` を**タップ** | サステインポイントを次へ（Off → 1 → … → 7 → Off） | `rowR.sus1`〜`sus8`（Off は全消灯） |
-| `rowR.sus` を**押しながら**エンコーダ K を回す | サステインポイント = ステップ K（8 番目 = Off） | 同上 |
-| `rowR.end` をタップ | エンドポイントを次へ（2 → … → 8 → 2） | `rowR.end2`〜`end8` |
-| `rowR.end` を押しながらエンコーダ K | エンドポイント = ステップ K（2〜8） | 同上 |
-| `line` スイッチ（全体で 1 個） | Line Select を Line 1 → Line 2 → 1+1' → 1+2' と巡回 | `line.1`〜`line.4` |
 
-sus / end の LED は**パラメータの実際の値を常時表示**します（プリセット切替や MIDI CC で
-変わっても追従）。表示しているのはその行で選択中の EG のポイントです。
-`rowR.dco` `rowR.rate` などを**直接選択ボタン**として割り当てることもできます。
+sus / end / line の LED は**パラメータの実際の値を常時表示**します（プリセット切替や MIDI CC で
+変わっても追従）。`rowR.dco` `rowR.rate` などを**直接選択ボタン**として割り当てることもできます。
 
 設定ファイルの書式（`#` 以降はコメント）:
 
@@ -375,20 +373,21 @@ encoder-quarters 4            # 直交エッジ何個で 1 ステップか（無
 encoder-step 0.01             # 1 ステップの変化量（正規化値）
 debounce 5                    # ボタンのチャタリング除去 [ms]
 pullups on                    # エンコーダ/ボタンのピンに内部プルアップ
+shift-register /dev/spidev0.1 6   # 任意: LED 用の 74HC595 チェーン（SPI デバイス、個数）
 
 encoder <役割> <A ピン> <B ピン>   # ピンは <チップ>.<A|B><0-7>、例 0.A0
 button  <役割> <ピン>
-led     <役割> <ピン> [active-low]
+led     <役割> <ピン> [active-low]  # LED は sr<チップ>.<ビット> も可、例 sr2.5
 ```
 
 | 種類 | 役割 |
 |---|---|
 | encoder | `row<R>.<K>`（EG エディタ）、`param:<id>`（固定割当。`--enc` と同じ動作） |
 | button | `row<R>.eg` `row<R>.field` `row<R>.sus` `row<R>.end`、直接選択の `row<R>.dco/dcw/dca/rate/level`、全体の `line`（EG エディタ）、`preset-next` `preset-prev` `revert` `panic`（`--button` と同じ） |
-| led | `row<R>.dco/dcw/dca` `row<R>.rate/level` `row<R>.sus<K>` `row<R>.end<K>` `line.<K>` |
+| led | `row<R>.dco/dcw/dca` `row<R>.rate/level` `row<R>.sus<K>`（1〜7） `row<R>.end<K>`（2〜8） `line.<K>` |
 
 - **GPA7 / GPB7 は出力専用**（現行 MCP23017 の仕様）なので、入力を割り当てると起動時に
-  エラーになります。LED に使ってください。同じピンの二重割当・未宣言のチップも行番号付きで
+  エラーになります（LED なら置けます）。同じピンの二重割当・未宣言のチップも行番号付きで
   エラーになります
 - EG エディタの役割は pd のパラメータ名（`line1_dcw_rate3` 等）を引くので `--synth pd` 専用です。
   `param:` だけのパネルはどの音源でも使えます
@@ -695,12 +694,13 @@ PipeWire、プラグインラッパ等）への移植ではこの層だけを書
 | `GpioEncoderInput.{hpp,cpp}` | GPIO ロータリーエンコーダの `RelativeControlInput` 実装。GPIO キャラクタデバイス (uapi v2) でエッジイベントを受け、直交デコード |
 | `QuadratureDecoder.hpp` | 直交デコーダ（A/B の状態 → ステップ）。GPIO 版と MCP23017 版で共用、単体テスト可能 |
 | `ButtonInput.hpp` | 押しボタン群の抽象。実装は自スレッドでデバウンス済みのエッジを SPSC キューに積み、**`ControlLoop` のスレッドがまとめて取り出して処理**する（ボタン動作の送り先 = ホストのキューが単一生産者なので、ボタンの供給元がいくつあっても発行スレッドを 1 本に揃えるため） |
-| `LedOutput.hpp` | LED 群の抽象。`setLed()` はどのスレッドからでも呼べ、ブロックしない |
+| `LedOutput.hpp` | LED 群の抽象。`setLed()` は状態を記録するだけでブロックしない。`flush()` で溜まった変化をハードへ送る（`ControlLoop` のスレッドから、1 ティックにつき 1 回） |
 | `GpioButtonInput.{hpp,cpp}` | GPIO 直結タクトスイッチの `ButtonInput` 実装（カーネル側デバウンス） |
 | `I2cBus.{hpp,cpp}` | I2C バスのレジスタ読み書き。`I2C_RDWR` で転送ごとにアドレスを指定するので 1 本の fd で複数チップを扱える。読みはレジスタ指定と読出しを 1 トランザクションで行う |
 | `Mcp23017Panel.{hpp,cpp}` | MCP23017（最大 8 個）上のエンコーダ・ボタン・LED。走査スレッドが全チップの GPIO を読み、`encoders()`（`RelativeControlInput`）/ `buttons()`（`ButtonInput`）/ `leds()`（`LedOutput`）として公開する。INT 線があれば変化時のみ読む。`processSnapshot()` でハード無しに単体テスト可能 |
+| `ShiftRegisterLeds.{hpp,cpp}` | 74HC595 のデイジーチェーン（SPI）上の LED。CE1 をラッチに使うので全出力が一斉に切り替わる。`setLed()` で記録し `flush()` で変化があったときだけ 1 回転送 |
 | `PanelConfig.hpp` | `--panel` 設定ファイルのパーサ（構文のみ。役割の解釈は `main.cpp`） |
-| `EgEditPanel.hpp` | 「何を編集中か」を持つページ切替ロジック（`ControlSurface`）。行 = line、列 = EG ステップで、**行ごとに独立した選択状態**を持つ。スイッチで EG / rate・level を巡回、sus/end はタップで巡回・押しながら回して直接指定、Line Select の巡回。LED は選択状態と sus/end/line select の実際の値を表示。ハード非依存（入力と LED はインタフェース越し）で、`ControlLoop` のスレッドだけで動くのでロック不要 |
+| `EgEditPanel.hpp` | 「何を編集中か」を持つページ切替ロジック（`ControlSurface`）。行 = line、列 = EG ステップで、**行ごとに独立した選択状態**を持つ。スイッチで EG / rate・level / sus / end / Line Select を巡回。LED は選択状態と sus/end/line select の実際の値を表示。ハード非依存（入力と LED はインタフェース越し）で、`ControlLoop` のスレッドだけで動くのでロック不要 |
 | `ParameterWatcher.hpp` | UI スレッド（LCD・コンソール等）向けの変更検知。全パラメータの変更カウンタをポーリングし「前回から変わったパラメータ」だけを報告 |
 | `ParameterDisplay.hpp` | 表示バックエンドの抽象（`showParameter` / `showPreset`）と、`-v` 用のコンソール実装。**表示先を増やすのはここを実装するだけ**。1 行ぶんのデータは `DisplayLine`（ID / 表示名 / 整形済みの値 / きっかけ）で、16x2 LCD が自分で配置できるようフィールドを分けてある |
 | `LcdParameterDisplay.hpp` | `DisplayLine` をキャラクタ表示に割り付ける `ParameterDisplay` 実装（上段=表示名、下段=値、プリセットは `PRESET n`/名前）。桁数に合わせて切り詰め、**内容が変わった行だけ**書き直すので待機中の I2C トラフィックはゼロ |
