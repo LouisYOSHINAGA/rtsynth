@@ -1090,10 +1090,11 @@ int main(){
         const char* row1[] = {"dco", "dcw", "dca", "rate", "level"};
         for(int i = 0; i < 5; i++) logic.attachLed(std::string("row1.") + row1[i], &leds, i);
         for(int k = 1; k <= 8; k++) logic.attachLed("row1.step" + std::to_string(k), &leds, 10 + k);
-        for(int k = 1; k <= 8; k++){
+        for(int k = 1; k <= 9; k++){
             logic.attachLed("row1.wave1." + std::to_string(k), &leds, 80 + k);
             logic.attachLed("row1.wave2." + std::to_string(k), &leds, 90 + k);
         }
+        logic.attachLed("row1.kf", &leds, 100);
         const char* lines[] = {"line.1", "line.2", "line.1'", "line.2'"};
         for(int i = 0; i < 4; i++) logic.attachLed(lines[i], &leds, 40 + i);
         const char* tone[] = {"preset", "user", "page", "compare"};
@@ -1159,7 +1160,7 @@ int main(){
         Parameter* wave2 = params.byId("line1_wave2");
         auto litWaves = [&](int base){
             int lit = 0, count = 0;
-            for(int k = 1; k <= 8; k++) if(leds.on[base + k]){ lit = k; count++; }
+            for(int k = 1; k <= 9; k++) if(leds.on[base + k]){ lit = k; count++; }
             return (count == 1)? lit : (count == 0)? 0 : -1;
         };
         wave1->setOption(5);   // waveform 6
@@ -1180,24 +1181,44 @@ int main(){
         logic.poll();
         expect(wave2->option() == 0 && litWaves(90) == 0, "pd panel: wave2 wraps 8 -> Off");
 
-        // key follow: the DCx's (DCW for DCO), then swap; abs sets the value
+        // key follow: wave1 + wave2 together toggle key follow mode
         Parameter* kfDcw = params.byId("line1_dcw_key_follow");
         Parameter* kfDca = params.byId("line1_dca_key_follow");
         kfDcw->setOption(0);
-        kfDca->setOption(0);
-        const uint32_t shown = kfDcw->changeCount();
-        press("row1.keyfollow");
-        expect(logic.target() == kfDcw && kfDcw->changeCount() != shown && kfDcw->option() == 0,
-               "pd panel: key follow select shows DCW key follow without changing it");
-        press("row1.keyfollow");
-        enc.pending[19] = +3;
+        kfDca->setOption(4);
+        wave1->setOption(2);
+        wave2->setOption(5);
+        auto w1 = logic.button("row1.wave1");
+        auto w2 = logic.button("row1.wave2");
+        w1(true);
+        expect(wave1->option() == 2, "pd panel: a wave button does nothing until released");
+        w2(true);            // chord
+        w1(false);
+        w2(false);
         logic.poll();
-        expect(logic.target() == kfDca && kfDca->option() == 3,
-               "pd panel: pressing again swaps to DCA; the abs encoder sets 0..9");
-        press("row1.dca");
-        press("row2.keyfollow");
-        expect(logic.target() == params.byId("line2_dcw_key_follow"),
-               "pd panel: each row has its own key follow");
+        expect(wave1->option() == 2 && wave2->option() == 5,
+               "pd panel: a chord does not step the waveforms");
+        expect(leds.on[100] && litWaves(80) == 0 && litWaves(90) == 4,
+               "pd panel: key follow mode: KF LED on, DCW 0 = dark, DCA 4 = LED 4");
+        expect(logic.target() == kfDcw, "pd panel: entering key follow puts it on the LCD");
+        for(int i = 0; i < 9; i++) press("row1.wave1");
+        press("row1.wave2");
+        logic.poll();
+        expect(kfDcw->option() == 9 && kfDca->option() == 5 && litWaves(80) == 9 && litWaves(90) == 5,
+               "pd panel: in key follow mode the wave buttons step 0..9 (9 = LED 9)");
+        press("row1.wave1");
+        logic.poll();
+        expect(kfDcw->option() == 0 && litWaves(80) == 0, "pd panel: key follow wraps 9 -> 0");
+        expect(wave1->option() == 2 && wave2->option() == 5,
+               "pd panel: the waveforms are untouched in key follow mode");
+        w2(true); w1(true); w2(false); w1(false);   // chord the other way round
+        logic.poll();
+        expect(!leds.on[100] && litWaves(80) == 3 && litWaves(90) == 5,
+               "pd panel: a second chord returns to the waveforms");
+        press("row1.keyfollow");
+        logic.poll();
+        expect(leds.on[100], "pd panel: a keyfollow button toggles the same mode");
+        press("row1.keyfollow");
 
         // line select LEDs
         Parameter* lineSelect = params.byId("line_select");
@@ -1317,10 +1338,10 @@ int main(){
                                                              : &hw.leds(), channel);
             if(!ok){ std::printf("       led line %d\n", l.line); break; }
         }
-        expect(ok && config.encoders.size() == 19 && config.buttons.size() == 33
-               && config.leds.size() == 81 && config.expanders.size() == 6
+        expect(ok && config.encoders.size() == 19 && config.buttons.size() == 29
+               && config.leds.size() == 87 && config.expanders.size() == 5
                && config.shiftChips == 10,
-               "panels/pd_panel.conf: 19 encoders, 33 buttons, 81 LEDs, all valid");
+               "panels/pd_panel.conf: 19 encoders, 29 buttons, 87 LEDs, all valid");
         if(!error.empty()){
             std::printf("       %s\n", error.c_str());
         }

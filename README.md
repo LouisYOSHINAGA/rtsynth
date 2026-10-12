@@ -336,7 +336,7 @@ MIDI CC と取り合いになっても値が飛びません。
 
 ### フロントパネル（MCP23017 ＋ 74HC595）
 
-CZ-101 風のフロントパネル（スイッチ 33・エンコーダ 19・LED 81）を組めます。
+CZ-101 風のフロントパネル（スイッチ 29・エンコーダ 19・LED 87）を組めます。
 スイッチとエンコーダは **I2C の I/O エキスパンダ MCP23017**（1 バスに最大 8 個）、LED は
 **SPI のシフトレジスタ 74HC595**（数珠つなぎ）に載せ、**設定ファイル 1 枚**で配置と役割を
 決めます。Pi 側は I2C（LCD と共用）・SPI（MCP3008 と共用、CE1）・INT 線数本だけで済み、
@@ -351,15 +351,14 @@ CZ-101 風のフロントパネル（スイッチ 33・エンコーダ 19・LED 
 
 | 部 | スイッチ / ツマミ | 動作 | LED |
 |---|---|---|---|
-| 値 | `abs.up` / `abs.down`（またはエンコーダ `abs`） | **最後に触ったパラメータ（LCD に出ているもの）を 1 つ上下**。離散値は 1 選択肢ずつ | — |
 | 音色 | `preset` / `user` | **押した瞬間に**もう一方のバンクの同じ番号へ（preset 3 → user 3） | `preset` / `user` |
 | | `page` | **押した瞬間に**別の面の同じボタンへ（3 → 11、11 → 3） | `page` |
 | | `tone1`〜`tone8` | 今のバンク・面のその番号へ | `tone1`〜`8`（今の音色） |
 | | `compare` | 編集中の音色で押すと**元の音色**、もう一度で編集後に戻る | `compare`（編集済みで点灯、比較中は点滅） |
 | | `initialize` | 今の音色の編集を全部捨てて起動時の値へ | — |
 | line R | `rowR.eg` | 編集する EG を DCO → DCW → DCA | `rowR.dco/dcw/dca` |
-| | `rowR.wave1` / `rowR.wave2` | 波形 1（1〜8）/ 波形 2（Off, 1〜8）を次へ | `rowR.wave1.1`〜`8` / `rowR.wave2.1`〜`8`（波形ごとに 1 個、選択中の 1 個が点灯。波形 2 の Off は全消灯） |
-| | `rowR.keyfollow` | 選択中の DCx（DCO なら DCW）の key follow を LCD に出し `abs` の対象に。もう一度で DCW ↔ DCA | （LCD） |
+| | `rowR.wave1` / `rowR.wave2` | 波形 1（1〜8）/ 波形 2（Off, 1〜8）を次へ（**離したときに**動作） | `rowR.wave1.1`〜`9` / `rowR.wave2.1`〜`9`（値ごとに 1 個、今の値の 1 個が点灯。波形 2 の Off は全消灯。9 番は key follow 用） |
+| | `rowR.wave1` ＋ `rowR.wave2` **同時押し** | **key follow モード**の入/切。モード中は wave1 / wave2 で DCW / DCA の key follow を 0 → 1 → … → 9 → 0 と進める（LED は 1〜9、0 は全消灯） | `rowR.kf`（モード中点灯） |
 | | `rowR.field` | rate ↔ level | `rowR.rate/level` |
 | | エンコーダ `rowR.1`〜`8` | 選択中の EG の rate / level K（level 8 は pd に無いので無効） | — |
 | | `rowR.sus` / `rowR.end` | サステイン（Off, 1〜7）/ エンド（2〜8）を次へ | `rowR.step1`〜`8`（サステインとエンドの位置。最大 2 個、Off なら 1 個） |
@@ -368,6 +367,9 @@ CZ-101 風のフロントパネル（スイッチ 33・エンコーダ 19・LED 
 | | エンコーダ `dv.1` `dv.2` `dv.3` | detune oct / note / fine、vib delay / depth / rate（1 クリック = 1 段） | — |
 | | `vib.on` / `vib.wave` | vibrato オン・オフ / 波形（tri, up saw, down saw, square） | `vib.on`、`vib.tri/upsaw/downsaw/square` |
 
+- 値の上下ボタン `abs.up` / `abs.down`（またはエンコーダ `abs`）も使えます。**最後に触った
+  パラメータ（LCD に出ているもの）を 1 段上下**します。同梱の構成では全部の値に専用の
+  スイッチかツマミがあるので省いています
 - LED は**パラメータの実際の値**から作るので、プリセット切替・MIDI CC・`abs` で変えても追従します
 - **pd にはまだ vibrato が無い**ので、vib 系のスイッチ・ツマミは今は何もしません（起動時にその旨を
   1 行表示）。pd 側に `vibrato` `vibrato_wave` `vibrato_delay` `vibrato_depth` `vibrato_rate` が

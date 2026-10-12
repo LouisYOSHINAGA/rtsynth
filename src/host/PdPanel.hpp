@@ -49,17 +49,24 @@ inline bool numbered(const std::string& text, const std::string& prefix, int& n)
 //            rowR.end        end point: 2..8, 2, ...
 //            rowR.wave1      first waveform: 1..8, 1, ...
 //            rowR.wave2      second waveform: Off, 1..8, Off, ...
-//            rowR.keyfollow  put the DCW or DCA key follow (0..9) on the
-//                            LCD and under abs.up/down: the one of the
-//                            selected DCx (DCW for DCO); pressing again
-//                            swaps DCW <-> DCA
+//            rowR.wave1 + rowR.wave2 pressed together: key follow mode
+//                            on/off. In key follow mode the same two
+//                            buttons step the DCW (wave1) and DCA (wave2)
+//                            key follow 0..9, 0, ...
+//            rowR.keyfollow  (optional) the same toggle on its own button
 //   encoders rowR.1 .. rowR.8   rate / level K of the selected DCx (no
 //                               level 8 in pd: idle on the level page)
 //   LEDs     rowR.dco/dcw/dca, rowR.rate/level   the selection
 //            rowR.step1..8   the sustain and the end step of the selected
 //                            DCx (2 lit, or 1 when sustain is Off)
-//            rowR.wave1.1..8 one LED per waveform, the selected one lit
-//            rowR.wave2.1..8 (wave2 Off = all dark)
+//            rowR.wave1.1..9 one LED per value, the current one lit:
+//            rowR.wave2.1..9 the waveform (1..8; wave2 Off = all dark), or
+//                            in key follow mode the DCW / DCA key follow
+//                            (0 = all dark, 1..9)
+//            rowR.kf         lit in key follow mode
+//
+// The waveform buttons act when they are released, not pressed: only
+// then is it known that the press was not half of a two-button chord.
 //
 // sus / end / waveform buttons step the value and leave it as the abs
 // target, so abs.up/down can also step it backwards.
@@ -120,9 +127,9 @@ public:
         if(name == "level") return onPress([row]{ row->level = true; });
         if(name == "sus")   return onPress([this, row]{ panel_.step(row->selected().sustain); });
         if(name == "end")   return onPress([this, row]{ panel_.step(row->selected().end); });
-        if(name == "wave1") return onPress([this, row]{ panel_.step(row->wave1); });
-        if(name == "wave2") return onPress([this, row]{ panel_.step(row->wave2); });
-        if(name == "keyfollow") return onPress([this, row]{ selectKeyFollow(*row); });
+        if(name == "wave1") return [this, row](bool pressed){ waveButton(*row, 0, pressed); };
+        if(name == "wave2") return [this, row](bool pressed){ waveButton(*row, 1, pressed); };
+        if(name == "keyfollow") return onPress([this, row]{ toggleKeyFollow(*row); });
         return {};
     }
 
@@ -157,10 +164,11 @@ public:
         }
         for(int wave = 1; wave <= 2; wave++){
             const std::string prefix = "wave" + std::to_string(wave) + ".";
-            if(pdpanel::numbered(name, prefix, n) && n >= 1 && n <= 8){
-                return [row, wave, n, on]{ return on(row->waveNumber(wave) == n); };
+            if(pdpanel::numbered(name, prefix, n) && n >= 1 && n <= 9){
+                return [row, wave, n, on]{ return on(row->shownValue(wave) == n); };
             }
         }
+        if(name == "kf") return [row, on]{ return on(row->keyFollowMode); };
         return {};
     }
 
@@ -184,6 +192,9 @@ private:
         Parameter* wave2 = nullptr;
         Parameter* keyFollowDcw = nullptr;
         Parameter* keyFollowDca = nullptr;
+        bool keyFollowMode = false;
+        std::array<bool, 2> waveHeld{};   // wave1 / wave2 button down
+        bool chord = false;               // both went down this time
         int eg = 0;           // 0 DCO, 1 DCW, 2 DCA
         bool level = false;   // false = rate page
 
@@ -199,6 +210,15 @@ private:
         int sustainStep() const { return selected().sustain? selected().sustain->option() : 0; }
         int endStep() const { return selected().end? selected().end->option() + 2 : 0; }
         // the number a player reads: wave1 1..8, wave2 0 (Off)..8
+        // what the wave LEDs show: the waveform number, or in key follow
+        // mode the DCW (wave1) / DCA (wave2) key follow
+        int shownValue(int wave) const {
+            if(keyFollowMode){
+                const Parameter* p = (wave == 1)? keyFollowDcw : keyFollowDca;
+                return p? p->option() : 0;
+            }
+            return waveNumber(wave);
+        }
         int waveNumber(int wave) const {
             const Parameter* p = (wave == 1)? wave1 : wave2;
             return p? p->option() + (wave == 1? 1 : 0) : 0;
@@ -215,14 +235,37 @@ private:
 
     bool validRow(int r) const { return r >= 1 && r <= static_cast<int>(rows_.size()); }
 
-    void selectKeyFollow(const Row& row){
-        Parameter* const current = panel_.target();
-        if(current == row.keyFollowDcw){
-            panel_.select(row.keyFollowDca);
-        }else if(current == row.keyFollowDca){
-            panel_.select(row.keyFollowDcw);
-        }else{
-            panel_.select(row.eg == 2? row.keyFollowDca : row.keyFollowDcw);
+    // wave1 (i = 0) / wave2 (i = 1): one alone steps on release, both
+    // together toggle key follow mode and do nothing else
+    void waveButton(Row& row, size_t i, bool pressed){
+        if(pressed){
+            row.waveHeld[i] = true;
+            if(row.waveHeld[1 - i]){
+                row.chord = true;
+                toggleKeyFollow(row);
+            }
+            return;
+        }
+        if(!row.waveHeld[i]){
+            return;
+        }
+        row.waveHeld[i] = false;
+        if(!row.chord){
+            if(row.keyFollowMode){
+                panel_.step(i == 0? row.keyFollowDcw : row.keyFollowDca);
+            }else{
+                panel_.step(i == 0? row.wave1 : row.wave2);
+            }
+        }
+        if(!row.waveHeld[1 - i]){
+            row.chord = false;   // both up: the next press starts afresh
+        }
+    }
+
+    void toggleKeyFollow(Row& row){
+        row.keyFollowMode = !row.keyFollowMode;
+        if(row.keyFollowMode){
+            panel_.select(row.keyFollowDcw);   // the LCD names what is now shown
         }
     }
 
