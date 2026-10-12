@@ -58,10 +58,8 @@ inline bool numbered(const std::string& text, const std::string& prefix, int& n)
 //   LEDs     rowR.dco/dcw/dca, rowR.rate/level   the selection
 //            rowR.step1..8   the sustain and the end step of the selected
 //                            DCx (2 lit, or 1 when sustain is Off)
-//            rowR.wave1.bit0..  the waveform number in binary, bit0 =
-//            rowR.wave2.bit0..  least significant (wave2 Off = all dark).
-//                            A number too big for the LEDs wired (8 on
-//                            three LEDs) blinks them all.
+//            rowR.wave1.1..8 one LED per waveform, the selected one lit
+//            rowR.wave2.1..8 (wave2 Off = all dark)
 //
 // sus / end / waveform buttons step the value and leave it as the abs
 // target, so abs.up/down can also step it backwards.
@@ -158,18 +156,9 @@ public:
             return [row, n, on]{ return on(n == row->sustainStep() || n == row->endStep()); };
         }
         for(int wave = 1; wave <= 2; wave++){
-            const std::string prefix = "wave" + std::to_string(wave) + ".bit";
-            if(pdpanel::numbered(name, prefix, n) && n < 8){
-                int& bits = (wave == 1)? row->wave1Bits : row->wave2Bits;
-                bits = std::max(bits, n + 1);
-                const int* width = &bits;
-                return [row, wave, n, width]{
-                    const int value = row->waveNumber(wave);
-                    if(value >= (1 << *width)){
-                        return LedState::Blink;   // does not fit the LEDs wired
-                    }
-                    return ((value >> n) & 1)? LedState::On : LedState::Off;
-                };
+            const std::string prefix = "wave" + std::to_string(wave) + ".";
+            if(pdpanel::numbered(name, prefix, n) && n >= 1 && n <= 8){
+                return [row, wave, n, on]{ return on(row->waveNumber(wave) == n); };
             }
         }
         return {};
@@ -197,8 +186,6 @@ private:
         Parameter* keyFollowDca = nullptr;
         int eg = 0;           // 0 DCO, 1 DCW, 2 DCA
         bool level = false;   // false = rate page
-        int wave1Bits = 0;    // LEDs wired per waveform display
-        int wave2Bits = 0;
 
         EgParams& selected(){ return egs[static_cast<size_t>(eg)]; }
         const EgParams& selected() const { return egs[static_cast<size_t>(eg)]; }
@@ -288,24 +275,25 @@ private:
 };
 
 // Tone (preset) selection, CZ-101 style: two banks of 16 tones — preset
-// and user — reached with 8 tone buttons and a page switch.
+// and user — reached with 8 tone buttons and a page switch. Every button
+// switches the tone at once, so the LEDs always describe the tone that
+// is sounding:
 //
-//   buttons  preset, user   choose the bank the tone buttons address
-//            page           tone buttons 1-8 <-> 9-16
-//            tone1..tone8   load bank / page / number (Program Change)
+//   buttons  preset, user   the same number in the other bank
+//                           (preset 3 -> user 3)
+//            page           the same button on the other page
+//                           (3 -> 11, 11 -> 3)
+//            tone1..tone8   that number on the current bank and page
 //            compare        A/B: the original tone <-> the edited one
 //                           (only while the tone is edited or compared)
 //            initialize     discard every edit to the current tone
-//   LEDs     preset, user, page    the bank / page the tone buttons address
-//            tone1..tone8   the current tone's number: lit when it is in
-//                           the addressed bank and page, blinking when it
-//                           is not (bank or page pressed, no tone yet)
+//   LEDs     preset, user, page, tone1..tone8   the current tone
 //            compare        lit while the tone is edited, blinking while
 //                           the original is being compared
 //
 // The program numbers: preset N = N - 1, user N = the last 16 slots of the
-// bank. Whenever the current tone changes (here, MIDI Program Change, the
-// preset-next button), the bank and page selection follow it.
+// bank. A Program Change from anywhere else (MIDI, preset-next) shows up
+// the same way.
 class PdToneSelect : public PanelLogic::Module {
 public:
     static constexpr int kTonesPerBank = 16;
@@ -333,9 +321,9 @@ public:
         auto onPress = [](std::function<void()> fn) -> PanelLogic::ButtonFn {
             return [fn](bool pressed){ if(pressed) fn(); };
         };
-        if(role == "preset") return onPress([this]{ user_ = false; });
-        if(role == "user")   return onPress([this]{ user_ = true; });
-        if(role == "page")   return onPress([this]{ page_ = !page_; });
+        if(role == "preset") return onPress([this]{ go([](Location& l){ l.user = false; }); });
+        if(role == "user")   return onPress([this]{ go([](Location& l){ l.user = true; }); });
+        if(role == "page")   return onPress([this]{ go([](Location& l){ l.page = !l.page; }); });
         if(role == "compare"){
             return onPress([this]{
                 if(available() && (bank_->comparing() || bank_->isEdited())){
@@ -347,11 +335,7 @@ public:
             return onPress([this]{ if(available()) host_.initialize(); });
         }
         if(pdpanel::numbered(role, "tone", n) && n >= 1 && n <= kButtons){
-            return onPress([this, n]{
-                if(available()){
-                    host_.programChange((user_? userBase_ : 0) + (page_? kButtons : 0) + n - 1);
-                }
-            });
+            return onPress([this, n]{ go([n](Location& l){ l.number = n; }); });
         }
         return {};
     }
@@ -359,40 +343,35 @@ public:
     PanelLogic::LedFn led(const std::string& role) override {
         int n = 0;
         auto on = [](bool lit){ return lit? LedState::On : LedState::Off; };
-        if(role == "preset") return [this, on]{ return on(available() && !user_); };
-        if(role == "user")   return [this, on]{ return on(available() && user_); };
-        if(role == "page")   return [this, on]{ return on(available() && page_); };
+        auto at = [this](auto test){
+            return [this, test]{
+                Location loc;
+                return (available() && locate(shown(), loc) && test(loc))? LedState::On
+                                                                        : LedState::Off;
+            };
+        };
+        if(role == "preset") return at([](const Location& l){ return !l.user; });
+        if(role == "user")   return at([](const Location& l){ return l.user; });
+        if(role == "page")   return at([](const Location& l){ return l.page; });
         if(role == "compare"){
-            return [this]{
+            return [this, on]{
                 if(!available()) return LedState::Off;
                 if(bank_->comparing()) return LedState::Blink;
-                return bank_->isEdited()? LedState::On : LedState::Off;
+                return on(bank_->isEdited());
             };
         }
         if(pdpanel::numbered(role, "tone", n) && n >= 1 && n <= kButtons){
-            return [this, n]{
-                Location loc;
-                if(!available() || !locate(bank_->current(), loc) || loc.number != n){
-                    return LedState::Off;
-                }
-                return (loc.user == user_ && loc.page == page_)? LedState::On : LedState::Blink;
-            };
+            return at([n](const Location& l){ return l.number == n; });
         }
         return {};
     }
 
     void tick() override {
-        if(!available()){
-            return;
-        }
-        const int current = bank_->current();
-        if(current != lastSeen_){
-            lastSeen_ = current;
-            Location loc;
-            if(locate(current, loc)){
-                user_ = loc.user;
-                page_ = loc.page;
-            }
+        // A requested switch lands on the audio thread a block or two
+        // later; until then the panel acts on the request, so pressing
+        // page twice quickly goes there and back instead of twice there.
+        if(pending_ >= 0 && (bank_->current() == pending_ || --pendingTicks_ <= 0)){
+            pending_ = -1;
         }
     }
 
@@ -400,10 +379,33 @@ private:
     struct Location {
         bool user = false;
         bool page = false;
-        int number = 0;  // 1..8 on the page
+        int number = 1;  // 1..8 on the page
     };
 
+    static constexpr int kPendingTicks = 50;   // 0.5 s at 100 Hz
+
     bool available() const { return userBase_ >= 0; }
+
+    // the tone the panel stands on: the requested one, until it lands
+    int shown() const { return (pending_ >= 0)? pending_ : bank_->current(); }
+
+    template <typename Change>
+    void go(Change change){
+        if(!available()){
+            return;
+        }
+        Location loc;
+        if(!locate(shown(), loc)){
+            loc = Location{};   // a slot outside both banks: start from preset 1
+        }
+        change(loc);
+        const int program = (loc.user? userBase_ : 0) + (loc.page? kButtons : 0) + loc.number - 1;
+        if(program != shown()){
+            pending_ = program;
+            pendingTicks_ = kPendingTicks;
+            host_.programChange(program);
+        }
+    }
 
     bool locate(int program, Location& loc) const {
         int index = -1;
@@ -425,9 +427,8 @@ private:
     PresetBank* bank_;
     Host host_;
     int userBase_ = -1;
-    int lastSeen_ = -1;
-    bool user_ = false;
-    bool page_ = false;
+    int pending_ = -1;
+    int pendingTicks_ = 0;
 };
 
 // DETUNE / VIBRATO: three encoders shared between the detune of the

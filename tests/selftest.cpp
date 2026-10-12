@@ -1085,14 +1085,14 @@ int main(){
             if(fn){ fn(true); fn(false); }
         };
         // LEDs: 0-2 row1 dco/dcw/dca, 3-4 rate/level, 10+K row1 stepK,
-        // 20+b wave1 bit b, 30+b wave2 bit b, 40-43 line.1/2/1'/2',
+        // 80+K wave1 K, 90+K wave2 K, 40-43 line.1/2/1'/2',
         // 50 preset 51 user 52 page 53 compare, 60+N toneN, 70 detune 71 vib
         const char* row1[] = {"dco", "dcw", "dca", "rate", "level"};
         for(int i = 0; i < 5; i++) logic.attachLed(std::string("row1.") + row1[i], &leds, i);
         for(int k = 1; k <= 8; k++) logic.attachLed("row1.step" + std::to_string(k), &leds, 10 + k);
-        for(int b = 0; b < 3; b++){
-            logic.attachLed("row1.wave1.bit" + std::to_string(b), &leds, 20 + b);
-            logic.attachLed("row1.wave2.bit" + std::to_string(b), &leds, 30 + b);
+        for(int k = 1; k <= 8; k++){
+            logic.attachLed("row1.wave1." + std::to_string(k), &leds, 80 + k);
+            logic.attachLed("row1.wave2." + std::to_string(k), &leds, 90 + k);
         }
         const char* lines[] = {"line.1", "line.2", "line.1'", "line.2'"};
         for(int i = 0; i < 4; i++) logic.attachLed(lines[i], &leds, 40 + i);
@@ -1154,36 +1154,31 @@ int main(){
         press("abs.up");
         expect(sus->option() == 2, "pd panel: abs steps what sus last changed");
 
-        // waveforms in binary on three LEDs
+        // waveforms: one LED per waveform
         Parameter* wave1 = params.byId("line1_wave1");
         Parameter* wave2 = params.byId("line1_wave2");
-        wave1->setOption(5);   // waveform 6 = 110
+        auto litWaves = [&](int base){
+            int lit = 0, count = 0;
+            for(int k = 1; k <= 8; k++) if(leds.on[base + k]){ lit = k; count++; }
+            return (count == 1)? lit : (count == 0)? 0 : -1;
+        };
+        wave1->setOption(5);   // waveform 6
         wave2->setOption(0);   // Off
         logic.poll();
-        expect(!leds.on[20] && leds.on[21] && leds.on[22]
-               && !leds.on[30] && !leds.on[31] && !leds.on[32],
-               "pd panel: waveform 6 shows 110, Off shows nothing");
+        expect(litWaves(80) == 6 && litWaves(90) == 0,
+               "pd panel: waveform 6 lights LED 6 alone, wave2 Off lights none");
         press("row1.wave2"); press("row1.wave2"); press("row1.wave2");
         logic.poll();
-        expect(wave2->option() == 3 && leds.on[30] && leds.on[31] && !leds.on[32],
-               "pd panel: wave2 steps to waveform 3 (011)");
+        expect(wave2->option() == 3 && litWaves(90) == 3, "pd panel: wave2 steps to waveform 3");
         press("row1.wave1"); press("row1.wave1");
-        bool blinkOn = false, blinkOff = false;
-        for(int i = 0; i < 2 * PanelLogic::kBlinkTicks; i++){
-            logic.poll();
-            if(leds.on[20] && leds.on[21] && leds.on[22]) blinkOn = true;
-            if(!leds.on[20] && !leds.on[21] && !leds.on[22]) blinkOff = true;
-        }
-        expect(wave1->option() == 7 && blinkOn && blinkOff,
-               "pd panel: waveform 8 does not fit three LEDs, so they blink");
-        logic.attachLed("row1.wave1.bit3", &leds, 23);   // a fourth LED: 8 fits now
         logic.poll();
-        expect(!leds.on[20] && !leds.on[21] && !leds.on[22] && leds.on[23],
-               "pd panel: with four LEDs waveform 8 shows 1000");
+        expect(wave1->option() == 7 && litWaves(80) == 8, "pd panel: waveform 8 lights LED 8");
         press("row1.wave1");
         logic.poll();
-        expect(wave1->option() == 0 && leds.on[20] && !leds.on[23],
-               "pd panel: wave1 wraps 8 -> 1 (0001)");
+        expect(wave1->option() == 0 && litWaves(80) == 1, "pd panel: wave1 wraps 8 -> 1");
+        for(int i = 0; i < 6; i++) press("row1.wave2");
+        logic.poll();
+        expect(wave2->option() == 0 && litWaves(90) == 0, "pd panel: wave2 wraps 8 -> Off");
 
         // key follow: the DCx's (DCW for DCO), then swap; abs sets the value
         Parameter* kfDcw = params.byId("line1_dcw_key_follow");
@@ -1215,33 +1210,42 @@ int main(){
         logic.poll();
         expect(leds.on[40] && !leds.on[42] && leds.on[43], "pd panel: 1+2' lights 1 and 2'");
 
-        // --- tone select ----------------------------------------------------
+        // --- tone select: every button switches at once ---------------------
+        // (the fake host only records; the test lands each switch itself,
+        // the way the audio thread would)
+        const int userBase = bank->count() - 16;
+        auto land = [&]{ if(!programs.empty()) bank->select(programs.back()); logic.poll(); };
         bank->select(2);   // preset 3
         logic.poll();
         expect(leds.on[50] && !leds.on[51] && !leds.on[52] && leds.on[63],
                "pd panel: preset 3 lights PRESET and tone 3");
-        press("tone5");
-        press("user");
         press("page");
-        press("tone4");
-        const int userBase = bank->count() - 16;
-        expect(programs.size() == 2 && programs[0] == 4 && programs[1] == userBase + 11,
-               "pd panel: tone buttons send preset 5, then user 12");
-        bool toneBlinks = false;
-        for(int i = 0; i < 2 * PanelLogic::kBlinkTicks; i++){
-            logic.poll();
-            toneBlinks |= !leds.on[63];
-        }
-        expect(leds.on[51] && leds.on[52] && toneBlinks,
-               "pd panel: with another bank/page addressed the current tone blinks");
-        bank->select(userBase + 11);
+        expect(programs.size() == 1 && programs[0] == 10,
+               "pd panel: page on preset 3 goes straight to preset 11");
+        land();
+        expect(leds.on[50] && leds.on[52] && leds.on[63], "pd panel: preset 11 = PRESET, PAGE, tone 3");
+        press("user");
+        expect(programs.back() == userBase + 10, "pd panel: user goes to user 11");
+        press("page");   // before the switch lands: acts on the requested tone
+        expect(programs.back() == userBase + 2,
+               "pd panel: a second press before the switch lands builds on the first");
+        land();
+        expect(leds.on[51] && !leds.on[52] && leds.on[63], "pd panel: user 3 = USER, tone 3");
+        press("tone5");
+        land();
+        expect(programs.back() == userBase + 4 && leds.on[65] && !leds.on[63],
+               "pd panel: tone 5 on the user bank");
+        const size_t sent = programs.size();
+        press("tone5");
+        expect(programs.size() == sent, "pd panel: the current tone is not re-sent");
+        press("preset");
+        land();
+        expect(programs.back() == 4 && leds.on[50] && leds.on[65], "pd panel: preset goes to preset 5");
+        bank->select(userBase + 9);   // e.g. a MIDI Program Change
         logic.poll();
-        expect(leds.on[51] && leds.on[52] && leds.on[64] && !leds.on[63],
-               "pd panel: user 12 lights USER, PAGE and tone 4");
-        bank->select(1);   // e.g. a MIDI Program Change
-        logic.poll();
-        expect(leds.on[50] && !leds.on[52] && leds.on[62],
-               "pd panel: the selection follows a tone changed elsewhere");
+        expect(leds.on[51] && leds.on[52] && leds.on[62],
+               "pd panel: the LEDs follow a tone changed elsewhere (user 10)");
+        bank->select(1);
 
         // compare / initialize
         press("compare");
@@ -1314,9 +1318,9 @@ int main(){
             if(!ok){ std::printf("       led line %d\n", l.line); break; }
         }
         expect(ok && config.encoders.size() == 19 && config.buttons.size() == 33
-               && config.leds.size() == 65 && config.expanders.size() == 6
-               && config.shiftChips == 9,
-               "panels/pd_panel.conf: 19 encoders, 33 buttons, 65 LEDs, all valid");
+               && config.leds.size() == 81 && config.expanders.size() == 6
+               && config.shiftChips == 10,
+               "panels/pd_panel.conf: 19 encoders, 33 buttons, 81 LEDs, all valid");
         if(!error.empty()){
             std::printf("       %s\n", error.c_str());
         }
