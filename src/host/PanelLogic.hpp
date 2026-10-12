@@ -107,7 +107,9 @@ public:
         return ask([&](Module& m){ return m.button(role); });
     }
 
-    bool attachEncoder(const std::string& role, RelativeControlInput* input, int channel){
+    // label: how a trace names this encoder (default: its role)
+    bool attachEncoder(const std::string& role, RelativeControlInput* input, int channel,
+                       std::string label = {}){
         EncoderFn fn;
         if(role == "abs"){
             fn = [this](int delta){
@@ -123,7 +125,7 @@ public:
         if(!fn){
             return false;
         }
-        encoders_.push_back({input, channel, std::move(fn)});
+        encoders_.push_back({input, channel, std::move(fn), label.empty()? role : label});
         return true;
     }
 
@@ -181,6 +183,10 @@ public:
     }
 
     Parameter* target() const { return target_; }
+
+    // Bring-up aid: called (from the ControlLoop thread) with a line per
+    // encoder movement, e.g. "encoder row1.3 (0.A4/0.A5) +2".
+    void setTrace(std::function<void(const std::string&)> trace){ trace_ = std::move(trace); }
     bool blinkOn() const { return (ticks_ / kBlinkTicks) % 2 == 0; }
 
     // --- runtime -------------------------------------------------------------
@@ -189,6 +195,10 @@ public:
         for(EncoderSlot& slot : encoders_){
             const int delta = slot.input->readDelta(slot.channel);
             if(delta != 0){
+                if(trace_){
+                    trace_("encoder " + slot.label + " " + (delta > 0? "+" : "")
+                           + std::to_string(delta));
+                }
                 slot.fn(delta);
             }
         }
@@ -230,6 +240,7 @@ private:
         RelativeControlInput* input;
         int channel;
         EncoderFn fn;
+        std::string label;
     };
     struct LedSlot {
         LedOutput* output;
@@ -266,6 +277,7 @@ private:
     std::vector<LedOutput*> outputs_;
     std::vector<std::string> warnings_;
     Parameter* target_ = nullptr;
+    std::function<void(const std::string&)> trace_;
     float stepSize_ = 0.01f;
     long ticks_ = 0;
 };

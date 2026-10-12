@@ -183,11 +183,11 @@ bool Mcp23017Panel::open(const Options& options){
     if(!bus_.open(options_.busPath)){
         return false;
     }
+    // A chip that does not answer is not an error: while a panel is being
+    // built one chip at a time, the rest of it already works. Its
+    // controls simply stay idle until it is wired and rtsynth restarted.
     for(Chip& chip : chips_){
-        if(!configureChip(chip)){
-            close();
-            return false;
-        }
+        chip.present = configureChip(chip);
     }
     if(!openInterrupt()){
         close();
@@ -243,10 +243,10 @@ bool Mcp23017Panel::configureChip(Chip& chip){
                  && writePair(bus_, a, kRegIntconA, 0x0000)   // interrupt on any change
                  && writePair(bus_, a, kRegGpintenA, interrupts);
     if(!ok){
-        std::cerr << "MCP23017 at 0x" << std::hex << +a << std::dec
-                  << " does not answer on " << options_.busPath
-                  << " (check wiring, A0-A2, RESET tied high; i2cdetect -y 1)"
-                  << std::endl;
+        std::cerr << "[panel] MCP23017 expander " << index << " (0x" << std::hex << +a
+                  << std::dec << ") does not answer on " << options_.busPath
+                  << " — its controls are inactive. Not wired yet? Otherwise check"
+                     " A0-A2, RESET tied high, power; i2cdetect -y 1" << std::endl;
         return false;
     }
     chip.writtenOlat = olat;
@@ -304,9 +304,9 @@ void Mcp23017Panel::scanAll(){
     }
 }
 
-bool Mcp23017Panel::scanChip(size_t c, int64_t now){
-    if(chips_[c].inputMask == 0){
-        return true;  // LED-only chip: nothing to read
+bool Mcp23017Panel::scanChip(size_t c, int64_t now, bool* changed){
+    if(chips_[c].inputMask == 0 || !chips_[c].present){
+        return true;  // LED-only or absent chip: nothing to read
     }
     uint8_t bytes[2];
     // reading GPIO also clears the chip's interrupt
@@ -314,15 +314,18 @@ bool Mcp23017Panel::scanChip(size_t c, int64_t now){
         readErrors_.fetch_add(1, std::memory_order_relaxed);
         return false;
     }
-    processSnapshot(static_cast<int>(c),
-                    static_cast<uint16_t>(bytes[0] | (bytes[1] << 8)), now);
+    const uint16_t bits = static_cast<uint16_t>(bytes[0] | (bytes[1] << 8));
+    if(changed != nullptr){
+        *changed = chips_[c].primed && bits != chips_[c].bits;
+    }
+    processSnapshot(static_cast<int>(c), bits, now);
     return true;
 }
 
 void Mcp23017Panel::flushLeds(){
     for(size_t c = 0; c < chips_.size(); c++){
         Chip& chip = chips_[c];
-        if(chip.outputMask == 0){
+        if(chip.outputMask == 0 || !chip.present){
             continue;
         }
         const uint16_t wanted = ledLevels_[c].load(std::memory_order_relaxed);
@@ -440,7 +443,23 @@ void Mcp23017Panel::scanThread(){
         const int64_t now = nowMs();
         if(now - lastFullScan >= kInterruptFallbackMs){
             // settles debounced buttons, catches anything an edge missed
-            scanAll();
+            for(size_t c = 0; c < chips_.size(); c++){
+                bool changed = false;
+                scanChip(c, now, &changed);
+                Chip& chip = chips_[c];
+                const int irq = chip.irqIndex;
+                // a change the chip's INT line never reported: if that keeps
+                // happening, INTA is not wired (the chip then only gets read
+                // here, every 20 ms, and fast knob turns are lost)
+                if(changed && irq >= 0 && ((pending >> irq) & 1) == 0
+                   && ++chip.silentChanges == 3 && !chip.intWarned){
+                    chip.intWarned = true;
+                    std::cerr << "[panel] expander " << c << " (0x" << std::hex
+                              << +chip.address << std::dec << "): its pins change but GPIO"
+                              << irqLines_[static_cast<size_t>(irq)]
+                              << " never signals it — is its INTA wired?" << std::endl;
+                }
+            }
             lastFullScan = now;
         }else{
             for(size_t c = 0; c < chips_.size(); c++){

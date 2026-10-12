@@ -113,6 +113,14 @@ public:
     LedOutput& leds(){ return ledBank_; }
 
     int numExpanders() const { return static_cast<int>(chips_.size()); }
+    // expanders that answered at open(); the others are skipped, so a
+    // panel can be wired and tried one chip at a time
+    int presentExpanders() const {
+        int n = 0;
+        for(const Chip& chip : chips_) n += chip.present? 1 : 0;
+        return n;
+    }
+
     // failed I2C transactions so far (loose wire, chip missing, ...)
     uint64_t readErrorCount() const { return readErrors_.load(std::memory_order_relaxed); }
 
@@ -137,6 +145,9 @@ private:
         bool primed = false;
         uint16_t writtenOlat = 0;
         bool olatWritten = false;
+        bool present = true;      // answered at open(); absent = skipped
+        int silentChanges = 0;    // changes the INT line did not announce
+        bool intWarned = false;
     };
 
     struct Encoder {
@@ -191,7 +202,7 @@ private:
     bool openInterrupt();
     void scanThread();
     void scanAll();
-    bool scanChip(size_t chip, int64_t now);
+    bool scanChip(size_t chip, int64_t now, bool* changed = nullptr);
     uint64_t assertedLines() const;   // bit i = irqLines_[i] is low
     void flushLeds();
     bool pinLevel(ExpanderPin pin) const {

@@ -87,7 +87,9 @@ void printUsage(const char* argv0){
         "  --button-chip <path> GPIO chip of the buttons (default: /dev/gpiochip0)\n"
         "  --panel <file>       a control panel on MCP23017 I2C expanders: encoders,\n"
         "                       buttons and LEDs as described in <file>\n"
-        "                       (see panels/pd_2line.conf)\n"
+        "                       (see panels/pd_panel.conf)\n"
+        "  --panel-led-test     with --panel: light every panel LED in turn at\n"
+        "                       startup and print its role and pin (wiring check)\n"
         "  --lcd <addr>         show the last-changed parameter on a 16x2 I2C LCD\n"
         "                       at this address (e.g. --lcd 0x27; find with i2cdetect)\n"
         "  --lcd-bus <path>     I2C bus of the LCD (default: /dev/i2c-1)\n"
@@ -102,6 +104,8 @@ void printUsage(const char* argv0){
         "                         load      DSP load meter, once a second\n"
         "                         voices    active voice count when it changes\n"
         "                         warnings  audio backend warnings\n"
+        "                         panel     every --panel button and encoder event,\n"
+        "                                   named by role and pin (wiring check)\n"
         "                         all       all of the above (the default)\n"
         "                       e.g. -v midi,param   or   --verbose=load\n"
         "  --midi-dump          also print the raw MIDI bytes as received, grouped\n"
@@ -187,9 +191,10 @@ struct VerboseOptions {
     bool load = false;      // [load]    DSP load meter, once a second
     bool voices = false;    // [voices]  active voice count when it changes
     bool warnings = false;  // audio backend (ALSA/RtAudio) warnings
+    bool panel = false;     // [panel]   --panel button / encoder events
 
-    bool any() const { return midi || param || load || voices || warnings; }
-    void enableAll(){ midi = param = load = voices = warnings = true; }
+    bool any() const { return midi || param || load || voices || warnings || panel; }
+    void enableAll(){ midi = param = load = voices = warnings = panel = true; }
 };
 
 // Parses the comma-separated argument of -v. Returns false (after saying
@@ -209,11 +214,13 @@ bool parseVerboseCategories(const std::string& text, VerboseOptions& out){
             out.load = true;
         }else if(name == "voices"){
             out.voices = true;
+        }else if(name == "panel"){
+            out.panel = true;
         }else if(name == "warnings"){
             out.warnings = true;
         }else{
             std::cerr << "Unknown -v category '" << name << "'. Available: "
-                         "midi, param, load, voices, warnings, all" << std::endl;
+                         "midi, param, load, voices, warnings, panel, all" << std::endl;
             return false;
         }
         if(comma == std::string::npos){
@@ -259,6 +266,7 @@ struct CliOptions {
     std::vector<ButtonMapping> buttonMappings;
     std::string buttonChip = "/dev/gpiochip0";
     std::string panelConfig;           // --panel file, "" = no expander panel
+    bool panelLedTest = false;
     int lcdAddress = -1;               // -1 = no LCD
     std::string lcdBus = "/dev/i2c-1";
     int maxVoices = 0;                 // 0 = instrument default
@@ -356,6 +364,8 @@ bool parseArguments(int argc, char* argv[], CliOptions& cli, bool& exitRequested
                 }
             }else if(arg == "--panel"){
                 if(const char* v = nextArg()) cli.panelConfig = v;
+            }else if(arg == "--panel-led-test"){
+                cli.panelLedTest = true;
             }else if(arg == "--button-chip"){
                 if(const char* v = nextArg()) cli.buttonChip = v;
             }else if(arg == "--enc-chip"){
@@ -407,14 +417,26 @@ bool parseArguments(int argc, char* argv[], CliOptions& cli, bool& exitRequested
 // generic abs.* and param:<id>); a button role none of them knows may be
 // a host action (preset-next, preset-prev, revert, panic).
 //
-// buttonHandlers[i] is what expander button i does.
+// What setUpPanel hands back: per expander button its handler and a
+// label for traces, and every LED for the LED test.
+struct PanelWiring {
+    std::vector<rtsynth::PanelLogic::ButtonFn> buttonHandlers;
+    std::vector<std::string> buttonLabels;   // "row1.eg (3.A0)"
+    struct Led {
+        std::string label;                   // "row1.dco (sr2.0)"
+        rtsynth::LedOutput* output;
+        int channel;
+    };
+    std::vector<Led> leds;
+};
+
 bool setUpPanel(const std::string& path, rtsynth::Mcp23017Panel& panel,
                 rtsynth::ShiftRegisterLeds& shiftLeds, rtsynth::PanelLogic& logic,
                 rtsynth::ControlLoop& controlLoop, rtsynth::Processor& synth,
                 const rtsynth::PdToneSelect::Host& toneHost,
                 const std::function<bool(const std::string&, const std::string&)>& checkAction,
                 const std::function<void(const std::string&)>& performAction,
-                std::vector<rtsynth::PanelLogic::ButtonFn>& buttonHandlers){
+                PanelWiring& wiring){
     rtsynth::PanelConfig config;
     std::string error;
     if(!rtsynth::loadPanelConfig(path, config, error)){
@@ -445,7 +467,9 @@ bool setUpPanel(const std::string& path, rtsynth::Mcp23017Panel& panel,
         if(channel < 0){
             return fail(e.line, panel.lastError());
         }
-        if(!logic.attachEncoder(e.role, &panel.encoders(), channel)){
+        const std::string label = e.role + " (" + rtsynth::Mcp23017Panel::pinName(e.a) + "/"
+                                + rtsynth::Mcp23017Panel::pinName(e.b) + ")";
+        if(!logic.attachEncoder(e.role, &panel.encoders(), channel, label)){
             return fail(e.line, "unknown encoder role '" + e.role + "'");
         }
     }
@@ -465,7 +489,8 @@ bool setUpPanel(const std::string& path, rtsynth::Mcp23017Panel& panel,
                 }
             };
         }
-        buttonHandlers.push_back(std::move(fn));
+        wiring.buttonHandlers.push_back(std::move(fn));
+        wiring.buttonLabels.push_back(b.role + " (" + rtsynth::Mcp23017Panel::pinName(b.pin) + ")");
     }
 
     shiftLeds.setChainLength(config.shiftChips);
@@ -484,6 +509,10 @@ bool setUpPanel(const std::string& path, rtsynth::Mcp23017Panel& panel,
         if(!logic.attachLed(l.role, output, channel)){
             return fail(l.line, "unknown LED role '" + l.role + "'");
         }
+        wiring.leds.push_back({l.role + " (" + (l.onShiftRegister
+                                   ? rtsynth::ShiftRegisterLeds::pinName(channel)
+                                   : rtsynth::Mcp23017Panel::pinName(l.pin)) + ")",
+                               output, channel});
     }
 
     for(const std::string& warning : logic.warnings()){
@@ -502,7 +531,8 @@ bool setUpPanel(const std::string& path, rtsynth::Mcp23017Panel& panel,
     for(const auto& expander : config.expanders){
         interruptLines += (expander.interruptLine >= 0)? 1 : 0;
     }
-    std::cout << "Panel: " << panel.numExpanders() << " MCP23017 on "
+    std::cout << "Panel: " << panel.presentExpanders() << " of " << panel.numExpanders()
+              << " MCP23017 on "
               << config.options.busPath << ", " << config.encoders.size() << " encoders, "
               << config.buttons.size() << " buttons, " << config.leds.size() << " LEDs"
               << (config.shiftChips > 0
@@ -645,7 +675,7 @@ int main(int argc, char* argv[]){
     rtsynth::ShiftRegisterLeds shiftLeds;      // LEDs on a 74HC595 chain
     rtsynth::PanelLogic panelLogic(synth->parameters());  // what the panel controls do
     std::vector<std::string> gpioButtonActions;
-    std::vector<rtsynth::PanelLogic::ButtonFn> panelButtonHandlers;
+    PanelWiring panelWiring;
     rtsynth::ControlLoop controlLoop(&adc, &encoders);
 
     const bool havePresets = (presets != nullptr && !presets->empty());
@@ -748,13 +778,36 @@ int main(int argc, char* argv[]){
         toneHost.toggleCompare = [&host]{ host.sendCommand(rtsynth::HostCommand::ToggleCompare); };
         toneHost.initialize = [&host]{ host.sendCommand(rtsynth::HostCommand::RevertPreset); };
         if(!setUpPanel(cli.panelConfig, panel, shiftLeds, panelLogic, controlLoop, *synth,
-                       toneHost, checkAction, performAction, panelButtonHandlers)){
+                       toneHost, checkAction, performAction, panelWiring)){
             return 1;
         }
-        controlLoop.addButtons(&panel.buttons(),
-            [&panelButtonHandlers](int channel, bool pressed){
-                panelButtonHandlers[static_cast<size_t>(channel)](pressed);
+        const bool trace = cli.verbose.panel;
+        if(trace){
+            panelLogic.setTrace([](const std::string& line){
+                std::cout << "[panel] " << line << std::endl;
             });
+        }
+        controlLoop.addButtons(&panel.buttons(),
+            [&panelWiring, trace](int channel, bool pressed){
+                const size_t i = static_cast<size_t>(channel);
+                if(trace){
+                    std::cout << "[panel] button " << panelWiring.buttonLabels[i]
+                              << (pressed? " down" : " up") << std::endl;
+                }
+                panelWiring.buttonHandlers[i](pressed);
+            });
+        if(cli.panelLedTest){
+            // one LED at a time, named, before the panel logic takes over
+            std::cout << "[panel] LED test: " << panelWiring.leds.size() << " LEDs" << std::endl;
+            for(const auto& led : panelWiring.leds){
+                std::cout << "[panel] LED " << led.label << std::endl;
+                led.output->setLed(led.channel, true);
+                led.output->flush();
+                std::this_thread::sleep_for(std::chrono::milliseconds(400));
+                led.output->setLed(led.channel, false);
+                led.output->flush();
+            }
+        }
     }
 
     if(controlLoop.hasWork()){

@@ -540,6 +540,61 @@ LED は 87 個ありますが同時に点くのは多くても 23 個（ほと�
 - 9 番目の LED と KF の LED は MCP23017 の出力専用ピンに載せています（595 は 10 個で満杯のため）。
   出力専用ピンはあと 3 本（3.A7、3.B7、4.B7）空いています
 
+### 少しずつ組む（段階的な立ち上げ）
+
+**設定ファイルは最終形（`panels/pd_panel.conf`）のまま、部品を足すたびに rtsynth を
+起動し直すだけ**で進められます。まだ繋いでいない部分は次のように扱われます。
+
+- 応答しない MCP23017 は起動時に 1 行警告が出るだけで、そのチップのスイッチ・ツマミが
+  反応しないだけです（他は動きます）
+  ```
+  [panel] MCP23017 expander 3 (0x23) does not answer on /dev/i2c-1 — its controls are inactive. ...
+  Panel: 2 of 5 MCP23017 on /dev/i2c-1, ...
+  ```
+- まだ付けていないスイッチ・ツマミ・LED は、単に何も起きない / 点かないだけです
+- 74HC595 は**チェーンの先頭（sr0 = MOSI 側）から**つないでいれば、途中までで動きます
+  （後ろのチップ宛てのデータは最後のチップの QH' から抜けていくだけ）
+
+**最初に一度だけ**やること:
+
+```sh
+sudo raspi-config                        # Interface Options → I2C と SPI を有効化
+sudo usermod -aG i2c,spi,gpio $USER      # 再ログインで有効
+git pull && cmake --build build -j4      # 最新をビルド
+```
+
+**毎回の確認コマンド**（部品を足したら Ctrl+C → 再実行）:
+
+```sh
+./build/rtsynth --synth pd --lcd 0x27 --panel panels/pd_panel.conf -v panel,param
+#   [panel] encoder row1.3 (0.A4/0.A5) +1      ← どのツマミがどのピンで動いたか
+#   [param] L1 DCO Rate 3 = 0.510 (2450 ms)     ← それで何が変わったか
+#   [panel] button row1.eg (3.A0) down
+./build/rtsynth --synth pd --panel panels/pd_panel.conf --panel-led-test
+#   [panel] LED row1.step1 (sr0.0)              ← 今光っている LED の役割とピン（0.4 秒ずつ順番に）
+```
+
+**配線は必ず電源を切ってから**行い、終わったら起動し直してください（I2C の活線挿抜はできません）。
+
+おすすめの順番（各段階で上の 2 コマンドで確認）:
+
+| 段階 | つなぐもの | 確認 |
+|---|---|---|
+| 1 | MCP23017 チップ 0（0x20）の電源・I2C・アドレス・RESET・**INTA → GPIO4** | `i2cdetect -y 1` に 20。起動時の警告からチップ 0 が消える |
+| 2 | line 1 のエンコーダ 1 個（row1.1 = 0.A0/0.A1） | 回すと `[panel] encoder row1.1 ...`。逆向きなら設定の A/B を入れ替え。反応が鈍いときは INTA の配線（下記） |
+| 3 | 残りのエンコーダ row1.2〜7 | 同上 |
+| 4 | 74HC595 を 10 個まとめて数珠つなぎ（電源・SER/QH'・SRCLK・RCLK・/OE・/SRCLR） | `ls /dev/spidev0.1`。LED はまだ無くてよい |
+| 5 | line 1 の sus/end LED 8 個（sr0） | `--panel-led-test` で 1〜8 の順に光る |
+| 6 | チップ 2（0x22, INTA → GPIO16）: row1.8・row1 の field/sus/end | sus / end を押すと sus/end LED が動く |
+| 7 | チップ 3（0x23, INTA → GPIO24）: row1 の eg / wave1 / wave2 ＋ その LED（sr2, sr4, sr5, 0.A7/0.B7, 2.A7） | eg で DCx LED、wave で波形 LED、wave1+wave2 同時押しで KF LED |
+| 8 | line 2 側（チップ 1 = 0x21・INTA → GPIO12、残りのスイッチと LED） | line 1 と同じ |
+| 9 | 音色部（チップ 4 = 0x24・INTA → GPIO24、sr8・sr9・4.A7） | tone を押すと LCD に `PRESET n` |
+| 10 | detune / vib、line select | — |
+
+INTA は**チップと同時に**繋いでください。設定ファイルでは各チップに INT 線を割り当ててあるので、
+INTA が未配線のチップは 20 ms ごとの補助読み取りでしか読まれず、ツマミの反応が鈍くなります
+（その場合は起動中に `its pins change but GPIOn never signals it — is its INTA wired?` と出ます）。
+
 ### 設定と確認
 
 ```sh
@@ -549,7 +604,7 @@ ls /dev/spidev0.1        # SPI が有効なら存在する
 
 ./build/rtsynth --synth pd --lcd 0x27 --panel panels/pd_panel.conf -v param
 #   [panel] vibrato: the instrument has no parameter 'vibrato' ...   ← pd に vibrato が入るまで
-#   Panel: 5 MCP23017 on /dev/i2c-1, 19 encoders, 29 buttons, 87 LEDs
+#   Panel: 5 of 5 MCP23017 on /dev/i2c-1, 19 encoders, 29 buttons, 87 LEDs
 #          (10 x 74HC595 on /dev/spidev0.1), per-chip interrupts
 # line 1 のツマミ 3 を回す → [param] L1 DCO Rate 3 = ...
 ```
