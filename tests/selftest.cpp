@@ -1176,8 +1176,14 @@ int main(){
         }
         expect(wave1->option() == 7 && blinkOn && blinkOff,
                "pd panel: waveform 8 does not fit three LEDs, so they blink");
+        logic.attachLed("row1.wave1.bit3", &leds, 23);   // a fourth LED: 8 fits now
+        logic.poll();
+        expect(!leds.on[20] && !leds.on[21] && !leds.on[22] && leds.on[23],
+               "pd panel: with four LEDs waveform 8 shows 1000");
         press("row1.wave1");
-        expect(wave1->option() == 0, "pd panel: wave1 wraps 8 -> 1");
+        logic.poll();
+        expect(wave1->option() == 0 && leds.on[20] && !leds.on[23],
+               "pd panel: wave1 wraps 8 -> 1 (0001)");
 
         // key follow: the DCx's (DCW for DCO), then swap; abs sets the value
         Parameter* kfDcw = params.byId("line1_dcw_key_follow");
@@ -1308,9 +1314,9 @@ int main(){
             if(!ok){ std::printf("       led line %d\n", l.line); break; }
         }
         expect(ok && config.encoders.size() == 19 && config.buttons.size() == 33
-               && config.leds.size() == 61 && config.expanders.size() == 6
-               && config.shiftChips == 8,
-               "panels/pd_panel.conf: 19 encoders, 33 buttons, 61 LEDs, all valid");
+               && config.leds.size() == 65 && config.expanders.size() == 6
+               && config.shiftChips == 9,
+               "panels/pd_panel.conf: 19 encoders, 33 buttons, 65 LEDs, all valid");
         if(!error.empty()){
             std::printf("       %s\n", error.c_str());
         }

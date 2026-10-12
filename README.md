@@ -336,7 +336,7 @@ MIDI CC と取り合いになっても値が飛びません。
 
 ### フロントパネル（MCP23017 ＋ 74HC595）
 
-CZ-101 風のフロントパネル（スイッチ 33・エンコーダ 19・LED 61）を組めます。
+CZ-101 風のフロントパネル（スイッチ 33・エンコーダ 19・LED 65）を組めます。
 スイッチとエンコーダは **I2C の I/O エキスパンダ MCP23017**（1 バスに最大 8 個）、LED は
 **SPI のシフトレジスタ 74HC595**（数珠つなぎ）に載せ、**設定ファイル 1 枚**で配置と役割を
 決めます。Pi 側は I2C（LCD と共用）・SPI（MCP3008 と共用、CE1）・INT 線数本だけで済み、
@@ -357,7 +357,7 @@ CZ-101 風のフロントパネル（スイッチ 33・エンコーダ 19・LED 
 | | `compare` | 編集中の音色で押すと**元の音色**、もう一度で編集後に戻る | `compare`（編集済みで点灯、比較中は点滅） |
 | | `initialize` | 今の音色の編集を全部捨てて起動時の値へ | — |
 | line R | `rowR.eg` | 編集する EG を DCO → DCW → DCA | `rowR.dco/dcw/dca` |
-| | `rowR.wave1` / `rowR.wave2` | 波形 1（1〜8）/ 波形 2（Off, 1〜8）を次へ | `rowR.wave1.bit0..` / `wave2.bit0..`（番号の 2 進表示、Off は消灯。LED 3 個で 8 は全点滅） |
+| | `rowR.wave1` / `rowR.wave2` | 波形 1（1〜8）/ 波形 2（Off, 1〜8）を次へ | `rowR.wave1.bit0`〜`bit3` / `wave2.bit0`〜`bit3`（番号の 2 進表示 4 桁、例 6 = 0110。Off は全消灯） |
 | | `rowR.keyfollow` | 選択中の DCx（DCO なら DCW）の key follow を LCD に出し `abs` の対象に。もう一度で DCW ↔ DCA | （LCD） |
 | | `rowR.field` | rate ↔ level | `rowR.rate/level` |
 | | エンコーダ `rowR.1`〜`8` | 選択中の EG の rate / level K（level 8 は pd に無いので無効） | — |
