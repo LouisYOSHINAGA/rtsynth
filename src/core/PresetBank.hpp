@@ -42,6 +42,7 @@ public:
         // is being edited, factory_ stays as the instrument registered it,
         // which is what revertCurrent() undoes back to.
         factory_.push_back(values_.back());
+        compareStash_.resize(parameters_.size());
         return count() - 1;
     }
 
@@ -58,6 +59,7 @@ public:
         if(index < 0 || index >= count() || index == current()){
             return false;
         }
+        leaveCompare();  // the edited sound is what gets stored
         store(current());
         load(index);
         current_.store(index, std::memory_order_relaxed);
@@ -85,6 +87,7 @@ public:
         if(empty()){
             return false;
         }
+        comparing_.store(false, std::memory_order_relaxed);  // the edit is gone anyway
         const size_t index = static_cast<size_t>(current());
         for(size_t i = 0; i < values_[index].size(); i++){
             values_[index][i] = factory_[index][i];
@@ -92,6 +95,52 @@ public:
         load(current());
         revision_.fetch_add(1, std::memory_order_relaxed);
         return true;
+    }
+
+    // Compare (A/B): toggle between the edited sound and the original —
+    // the values the instrument registered for this slot, which is also
+    // what revertCurrent() returns to. Entering stashes the live values
+    // and loads the original; leaving puts the stash back. Edits made
+    // while comparing apply to the original being auditioned and are
+    // dropped on the way out; a preset switch or a revert ends the
+    // comparison first. RT-safe (the stash is sized at registration).
+    bool toggleCompare(){
+        if(empty()){
+            return false;
+        }
+        if(comparing()){
+            leaveCompare();
+        }else{
+            for(size_t i = 0; i < parameters_.size(); i++){
+                compareStash_[i] = parameters_[i].get();
+            }
+            const std::vector<float>& original = factory_[static_cast<size_t>(current())];
+            for(size_t i = 0; i < parameters_.size(); i++){
+                parameters_[i].set(original[i]);
+            }
+            comparing_.store(true, std::memory_order_relaxed);
+        }
+        revision_.fetch_add(1, std::memory_order_relaxed);
+        return true;
+    }
+    bool comparing() const { return comparing_.load(std::memory_order_relaxed); }
+
+    // True when the live sound differs from the current slot's original
+    // (what compare would switch to). Transient parameters (pitch bend,
+    // ...) are not part of the sound and do not count. Reads only atomics and the factory
+    // copy, which never changes after registration, so a UI thread may
+    // poll it; mid-switch it can be briefly wrong, never unsafe.
+    bool isEdited() const {
+        if(empty()){
+            return false;
+        }
+        const std::vector<float>& original = factory_[static_cast<size_t>(current())];
+        for(size_t i = 0; i < original.size(); i++){
+            if(!parameters_[i].transient() && parameters_[i].get() != original[i]){
+                return true;
+            }
+        }
+        return false;
     }
 
     // Bumped whenever every parameter changes at once (a preset switch or
@@ -114,6 +163,15 @@ public:
     }
 
 private:
+    void leaveCompare(){
+        if(comparing()){
+            for(size_t i = 0; i < parameters_.size(); i++){
+                parameters_[i].set(compareStash_[i]);
+            }
+            comparing_.store(false, std::memory_order_relaxed);
+        }
+    }
+
     void store(int index){
         std::vector<float>& values = values_[static_cast<size_t>(index)];
         for(size_t i = 0; i < parameters_.size(); i++){
@@ -132,6 +190,8 @@ private:
     std::vector<std::string> names_;
     std::vector<std::vector<float>> values_;
     std::vector<std::vector<float>> factory_;
+    std::vector<float> compareStash_;
+    std::atomic<bool> comparing_{false};
     std::atomic<int> current_{0};
     std::atomic<uint32_t> revision_{0};
 };

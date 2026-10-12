@@ -83,6 +83,15 @@ public:
         }
     }
 
+    // Toggle compare (A/B between the edited sound and the original, see
+    // PresetBank::toggleCompare). Virtual for the same reason as
+    // revertPreset(): an instrument may need to silence voices first.
+    virtual void comparePreset(){
+        if(PresetBank* bank = presets()){
+            bank->toggleCompare();
+        }
+    }
+
     // The parameter a MIDI CC currently writes to, or nullptr when the
     // controller is unmapped. Lets a UI report "CC 46 -> L1 DCW Rate 1"
     // without duplicating the instrument's CC map. The answer may depend

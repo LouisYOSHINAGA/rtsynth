@@ -58,10 +58,18 @@ struct ExpanderPin {
 // (one 2-byte transaction each), feeds the encoder pins into
 // QuadratureDecoders and the button pins into a debouncer. Without an
 // interrupt line it scans at a fixed rate (1 kHz by default — enough for
-// a hand-turned 24-pulse encoder at several turns per second). With the
-// INTA line wired, the chips are set to open-drain, mirrored INT, and the
-// thread sleeps until a pin changes, falling back to a slow scan (every
-// 10 ms) for the debouncer and the LEDs.
+// a hand-turned 24-pulse encoder at several turns per second). With INTA
+// wired, the chips are set to open-drain, mirrored INT, and the thread
+// sleeps until a pin changes, falling back to a slow full scan (every
+// 20 ms) for the debouncer and the LEDs.
+//
+// INTA can be wired per chip (addExpander's interruptLine — each chip to
+// its own Pi GPIO) or shared (Options::interruptLine — all INTAs tied
+// together, open-drain makes that safe). Per chip is what scales: only
+// the chip whose line fired is read, so a turning encoder costs one 2-byte
+// read instead of one per chip. Lines may also be shared by a few chips;
+// those are read together. Either every chip with inputs has a line, or
+// none does.
 //
 // LEDs: setLed() only records the wanted level (lock-free); the scan
 // thread writes OLAT when it changed, so any thread may drive them.
@@ -69,7 +77,8 @@ class Mcp23017Panel {
 public:
     struct Options {
         std::string busPath = "/dev/i2c-1";
-        // Pi GPIO wired to the chips' INTA (-1 = poll at scanRateHz)
+        // Pi GPIO wired to the chips' INTA, for every chip that names no
+        // line of its own (-1 = none: poll at scanRateHz)
         int interruptLine = -1;
         std::string interruptChip = "/dev/gpiochip0";
         int scanRateHz = 1000;
@@ -87,7 +96,9 @@ public:
     // --- setup (before open) ------------------------------------------------
     // Each returns the new item's index (= its channel), or -1 on error
     // with the reason in lastError().
-    int addExpander(uint8_t address);
+    // interruptLine: the Pi GPIO this chip's INTA is wired to (-1 = the
+    // shared Options::interruptLine, if any)
+    int addExpander(uint8_t address, int interruptLine = -1);
     int addEncoder(ExpanderPin a, ExpanderPin b);
     int addButton(ExpanderPin pin);
     int addLed(ExpanderPin pin, bool activeLow = false);
@@ -118,6 +129,8 @@ public:
 private:
     struct Chip {
         uint8_t address = 0;
+        int interruptLine = -1;   // as declared; -1 = the shared one
+        int irqIndex = -1;        // index into irqLines_ once open
         uint16_t inputMask = 0;
         uint16_t outputMask = 0;
         uint16_t bits = 0xFFFF;   // last snapshot (idle = pulled up)
@@ -178,8 +191,9 @@ private:
     bool openInterrupt();
     void scanThread();
     void scanAll();
+    bool scanChip(size_t chip, int64_t now);
+    uint64_t assertedLines() const;   // bit i = irqLines_[i] is low
     void flushLeds();
-    bool interruptAsserted() const;
     bool pinLevel(ExpanderPin pin) const {
         return (chips_[static_cast<size_t>(pin.chip)].bits >> pin.pin) & 0x1;
     }
@@ -199,6 +213,7 @@ private:
 
     I2cBus bus_;
     int interruptFd_ = -1;
+    std::vector<unsigned int> irqLines_;  // distinct Pi GPIOs requested
     std::thread thread_;
     std::atomic<bool> running_{false};
     std::atomic<uint64_t> readErrors_{0};

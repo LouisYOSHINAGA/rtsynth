@@ -334,65 +334,76 @@ EC11 等を GPIO に直結できます。A/B 端子を任意の GPIO へ、C（�
 専用スレッドで直交デコードします。ポット（絶対値）と違い「現在値からの相対操作」なので、
 MIDI CC と取り合いになっても値が飛びません。
 
-### エンコーダ 16 個のエディットパネル（MCP23017 ＋ 74HC595）
+### フロントパネル（MCP23017 ＋ 74HC595）
 
-エンコーダ・ボタンを **I2C の I/O エキスパンダ MCP23017**（16 ピン、1 バスに最大 8 個）に、
-LED を **SPI のシフトレジスタ 74HC595**（数珠つなぎ）か MCP23017 の空きピンに載せ、**設定ファイル 1 枚**で配置と役割を決めます。Pi 側は I2C（LCD と共用）と SPI（MCP3008 と共用、CE1）だけで済み、
-ツマミを増やすのも設定ファイルの追記だけです。配線は
-[README_HW.md の Step 7](README_HW.md#8-step-7-エンコーダ-16-個のエディットパネルmcp23017--74hc595)。
+CZ-101 風のフロントパネル（スイッチ 33・エンコーダ 19・LED 61）を組めます。
+スイッチとエンコーダは **I2C の I/O エキスパンダ MCP23017**（1 バスに最大 8 個）、LED は
+**SPI のシフトレジスタ 74HC595**（数珠つなぎ）に載せ、**設定ファイル 1 枚**で配置と役割を
+決めます。Pi 側は I2C（LCD と共用）・SPI（MCP3008 と共用、CE1）・INT 線数本だけで済み、
+ツマミやスイッチを増やすのも設定ファイルの追記だけです。配線は
+[README_HW.md の Step 7](README_HW.md#8-step-7-フロントパネルmcp23017--74hc595)。
 
 ```sh
-./build/rtsynth --synth pd --lcd 0x27 --panel panels/pd_2line.conf
+./build/rtsynth --synth pd --lcd 0x27 --panel panels/pd_panel.conf
 ```
 
-同梱の `panels/pd_2line.conf` は **line1 / line2 にそれぞれ独立した EG エディタ**を持つ構成です
-（エンコーダ 16・スイッチ 9・LED 42。入力は MCP23017 × 3、LED は 74HC595 × 6）。
-各行が自分の選択状態を持つので、行 1 で DCW の rate、行 2 で DCA の level、のように
-別々のページを開いておけます。
+同梱の `panels/pd_panel.conf` の操作（R = 1, 2 は line）:
 
-| スイッチ / ツマミ（行 R ごと） | 押すたびに / 回すと | LED |
-|---|---|---|
-| `rowR.eg` | 編集する EG を DCO → DCW → DCA → DCO | `rowR.dco/dcw/dca` |
-| `rowR.field` | rate ↔ level | `rowR.rate/level` |
-| `rowR.sus` | サステインポイントを Off → 1 → … → 7 → Off | `rowR.sus1`〜`sus7`（Off は全消灯） |
-| `rowR.end` | エンドポイントを 2 → … → 8 → 2 | `rowR.end2`〜`end8` |
-| `line`（全体で 1 個） | Line Select を Line 1 → Line 2 → 1+1' → 1+2' | `line.1`〜`line.4` |
-| エンコーダ `rowR.K` | `line<R>_<eg>_<rate/level>K` を相対操作（level 8 は pd に無いので無効） | — |
+| 部 | スイッチ / ツマミ | 動作 | LED |
+|---|---|---|---|
+| 値 | `abs.up` / `abs.down`（またはエンコーダ `abs`） | **最後に触ったパラメータ（LCD に出ているもの）を 1 つ上下**。離散値は 1 選択肢ずつ | — |
+| 音色 | `preset` / `user` | トーンボタンが指すバンクを選ぶ | `preset` / `user` |
+| | `tone1`〜`tone8`、`page` | 音色を選ぶ。`page` で 1〜8 ↔ 9〜16 | `tone1`〜`8`（今の音色。選択中のバンク/面と違えば点滅）、`page` |
+| | `compare` | 編集中の音色で押すと**元の音色**、もう一度で編集後に戻る | `compare`（編集済みで点灯、比較中は点滅） |
+| | `initialize` | 今の音色の編集を全部捨てて起動時の値へ | — |
+| line R | `rowR.eg` | 編集する EG を DCO → DCW → DCA | `rowR.dco/dcw/dca` |
+| | `rowR.wave1` / `rowR.wave2` | 波形 1（1〜8）/ 波形 2（Off, 1〜8）を次へ | `rowR.wave1.bit0..` / `wave2.bit0..`（番号の 2 進表示、Off は消灯。LED 3 個で 8 は全点滅） |
+| | `rowR.keyfollow` | 選択中の DCx（DCO なら DCW）の key follow を LCD に出し `abs` の対象に。もう一度で DCW ↔ DCA | （LCD） |
+| | `rowR.field` | rate ↔ level | `rowR.rate/level` |
+| | エンコーダ `rowR.1`〜`8` | 選択中の EG の rate / level K（level 8 は pd に無いので無効） | — |
+| | `rowR.sus` / `rowR.end` | サステイン（Off, 1〜7）/ エンド（2〜8）を次へ | `rowR.step1`〜`8`（サステインとエンドの位置。最大 2 個、Off なら 1 個） |
+| 全体 | `line` | Line 1 → 2 → 1+1' → 1+2' | `line.1` `line.2` `line.1'` `line.2'`（鳴っているライン） |
+| detune/vib | `detune-vib` | 3 つのツマミを detune ↔ vibrato に切替 | `detune` / `vib` |
+| | エンコーダ `dv.1` `dv.2` `dv.3` | detune oct / note / fine、vib delay / depth / rate（1 クリック = 1 段） | — |
+| | `vib.on` / `vib.wave` | vibrato オン・オフ / 波形（tri, up saw, down saw, square） | `vib.on`、`vib.tri/upsaw/downsaw/square` |
 
-sus / end / line の LED は**パラメータの実際の値を常時表示**します（プリセット切替や MIDI CC で
-変わっても追従）。`rowR.dco` `rowR.rate` などを**直接選択ボタン**として割り当てることもできます。
+- LED は**パラメータの実際の値**から作るので、プリセット切替・MIDI CC・`abs` で変えても追従します
+- **pd にはまだ vibrato が無い**ので、vib 系のスイッチ・ツマミは今は何もしません（起動時にその旨を
+  1 行表示）。pd 側に `vibrato` `vibrato_wave` `vibrato_delay` `vibrato_depth` `vibrato_rate` が
+  追加されればそのまま動きます
+- user 音色は 16 スロットあります（`presets/user/` に無い分は init の音）。編集は RAM 上だけで、
+  電源を切ると消えます（保存は未実装）
 
 設定ファイルの書式（`#` 以降はコメント）:
 
 ```
 bus /dev/i2c-1
-expander 0x20                 # 宣言順にチップ 0, 1, 2, ...
-interrupt 4                   # 任意: 全チップの INTA を繋いだ Pi の GPIO
+expander 0x20 [int 4]         # 宣言順にチップ 0, 1, 2, ...。int = そのチップの INTA を繋いだ Pi の GPIO
+interrupt 4                   # 任意: int を書かないチップ共通の INT 線
 scan-rate 1000                # INT 無しのときの読取り周期 [Hz]
 encoder-quarters 4            # 直交エッジ何個で 1 ステップか（無段階なら 1〜4 で好みに）
-encoder-step 0.01             # 1 ステップの変化量（正規化値）
+encoder-step 0.01             # 連続値パラメータの 1 ステップの変化量（正規化値）
 debounce 5                    # ボタンのチャタリング除去 [ms]
 pullups on                    # エンコーダ/ボタンのピンに内部プルアップ
-shift-register /dev/spidev0.1 6   # 任意: LED 用の 74HC595 チェーン（SPI デバイス、個数）
+shift-register /dev/spidev0.1 8   # 任意: LED 用の 74HC595 チェーン（SPI デバイス、個数）
 
 encoder <役割> <A ピン> <B ピン>   # ピンは <チップ>.<A|B><0-7>、例 0.A0
 button  <役割> <ピン>
 led     <役割> <ピン> [active-low]  # LED は sr<チップ>.<ビット> も可、例 sr2.5
 ```
 
+役割は上の表のものに加えて、どの音源でも使える汎用のものがあります:
+
 | 種類 | 役割 |
 |---|---|
-| encoder | `row<R>.<K>`（EG エディタ）、`param:<id>`（固定割当。`--enc` と同じ動作） |
-| button | `row<R>.eg` `row<R>.field` `row<R>.sus` `row<R>.end`、直接選択の `row<R>.dco/dcw/dca/rate/level`、全体の `line`（EG エディタ）、`preset-next` `preset-prev` `revert` `panic`（`--button` と同じ） |
-| led | `row<R>.dco/dcw/dca` `row<R>.rate/level` `row<R>.sus<K>`（1〜7） `row<R>.end<K>`（2〜8） `line.<K>` |
+| encoder | `param:<id>`（そのパラメータを操作。離散値は 1 クリック 1 段） |
+| button | `param:<id>`（離散値を次の選択肢へ。2 択ならトグル）、`preset-next` `preset-prev` `revert` `panic`（`--button` と同じ） |
+| led | `param:<id>=<n>`（そのパラメータが選択肢 n のとき点灯） |
 
 - **GPA7 / GPB7 は出力専用**（現行 MCP23017 の仕様）なので、入力を割り当てると起動時に
-  エラーになります（LED なら置けます）。同じピンの二重割当・未宣言のチップも行番号付きで
-  エラーになります
-- EG エディタの役割は pd のパラメータ名（`line1_dcw_rate3` 等）を引くので `--synth pd` 専用です。
-  `param:` だけのパネルはどの音源でも使えます
-- INT 線（任意）を引くと、ピンが変化したときだけ読みに行きます（チップは
-  INT ミラー・オープンドレインに設定されるので、全チップの INTA を 1 本にまとめて構いません）
+  エラーになります。同じピンの二重割当・未宣言のチップ・595 の範囲外も行番号付きでエラーになります
+- INT 線は**チップごと**に引けます（`expander 0x20 int 4`）。変化したチップだけを読むので、
+  エンコーダを回しても I2C の読み取りは 1 チップぶんで済みます。何チップかで 1 本を共有しても構いません
 
 ### パネルボタン（タクトスイッチ直結）
 
@@ -699,8 +710,9 @@ PipeWire、プラグインラッパ等）への移植ではこの層だけを書
 | `I2cBus.{hpp,cpp}` | I2C バスのレジスタ読み書き。`I2C_RDWR` で転送ごとにアドレスを指定するので 1 本の fd で複数チップを扱える。読みはレジスタ指定と読出しを 1 トランザクションで行う |
 | `Mcp23017Panel.{hpp,cpp}` | MCP23017（最大 8 個）上のエンコーダ・ボタン・LED。走査スレッドが全チップの GPIO を読み、`encoders()`（`RelativeControlInput`）/ `buttons()`（`ButtonInput`）/ `leds()`（`LedOutput`）として公開する。INT 線があれば変化時のみ読む。`processSnapshot()` でハード無しに単体テスト可能 |
 | `ShiftRegisterLeds.{hpp,cpp}` | 74HC595 のデイジーチェーン（SPI）上の LED。CE1 をラッチに使うので全出力が一斉に切り替わる。`setLed()` で記録し `flush()` で変化があったときだけ 1 回転送 |
-| `PanelConfig.hpp` | `--panel` 設定ファイルのパーサ（構文のみ。役割の解釈は `main.cpp`） |
-| `EgEditPanel.hpp` | 「何を編集中か」を持つページ切替ロジック（`ControlSurface`）。行 = line、列 = EG ステップで、**行ごとに独立した選択状態**を持つ。スイッチで EG / rate・level / sus / end / Line Select を巡回。LED は選択状態と sus/end/line select の実際の値を表示。ハード非依存（入力と LED はインタフェース越し）で、`ControlLoop` のスレッドだけで動くのでロック不要 |
+| `PanelConfig.hpp` | `--panel` 設定ファイルのパーサ（構文のみ。役割の解釈は `PanelLogic`） |
+| `PanelLogic.hpp` | パネルの**振る舞い**の枠組み（`ControlSurface`）。設定ファイルの役割名をモジュールに問い合わせてハンドラ（ボタン・エンコーダ・LED の状態 Off/On/点滅）に解決し、`ControlLoop` のスレッドで回す。共通サービス: 離散値を 1 選択肢ずつ動かす `nudge`、`abs.up/down` の対象（最後に触ったパラメータ）、LCD に名前を出す `select`。汎用役割 `param:<id>` もここ。ハード非依存でロック不要 |
+| `PdPanel.hpp` | pd 用のモジュール: `PdLineEditor`（行ごとの DCx / rate・level / sus・end / 波形 / key follow）、`PdLineSelect`、`PdToneSelect`（preset/user・tone・page・compare・initialize）、`PdDetuneVibrato`。パラメータが無い場合（他の音源、vibrato 未実装の pd）は役割だけ受け付けて何もしない |
 | `ParameterWatcher.hpp` | UI スレッド（LCD・コンソール等）向けの変更検知。全パラメータの変更カウンタをポーリングし「前回から変わったパラメータ」だけを報告 |
 | `ParameterDisplay.hpp` | 表示バックエンドの抽象（`showParameter` / `showPreset`）と、`-v` 用のコンソール実装。**表示先を増やすのはここを実装するだけ**。1 行ぶんのデータは `DisplayLine`（ID / 表示名 / 整形済みの値 / きっかけ）で、16x2 LCD が自分で配置できるようフィールドを分けてある |
 | `LcdParameterDisplay.hpp` | `DisplayLine` をキャラクタ表示に割り付ける `ParameterDisplay` 実装（上段=表示名、下段=値、プリセットは `PRESET n`/名前）。桁数に合わせて切り詰め、**内容が変わった行だけ**書き直すので待機中の I2C トラフィックはゼロ |
@@ -745,7 +757,7 @@ RT スレッドの規約はひとつだけです: **アロケーション・ロ�
 ポリフォニー上限・pd 音源と CC マッピング・**全ファクトリプリセットが実際に発音するか**・
 **Program Change による切替と編集内容の保持**・**`ParameterMonitor` の表示内容**・
 エンコーダの直交デコード・**MCP23017 パネルのデコード／デバウンス／ピン割当検査・
-設定ファイルのパース・EG エディットパネルの行ごとのページ切替と sus/end/line select・同梱パネル設定の全役割の検証**・`ParameterWatcher`・`MidiStreamParser` の各ケース・
+設定ファイルのパース・パネルロジック（abs・離散値の段送り・点滅）と pd 用モジュール全部・compare（A/B）・同梱パネル設定の全役割の検証**・`ParameterWatcher`・`MidiStreamParser` の各ケース・
 SPSC キューの 20 万イベントマルチスレッドストレステスト。CI にそのまま載せられます。
 
 ## 2.4 PD シンセの取り込み方
@@ -834,7 +846,7 @@ CC 割当を増やされた場合は追従が必要（コンパイルは通る�
 | フィルタ・LFO 等の部品追加 | `dsp/` に部品を追加し `Voice` に組み込む |
 | 新しい入力ハード（別 ADC・ボタン等） | `ControlInput` / `RelativeControlInput` / `ButtonInput` / `LedOutput` を実装（`Mcp3008Input` / `GpioEncoderInput` / `GpioButtonInput` / `Mcp23017Panel` が実例） |
 | パネルのツマミ・ボタンを増やす | `--panel` の設定ファイルに追記（エキスパンダは 1 バス 8 個 = 128 ピンまで）。再ビルド不要 |
-| パネルの新しい操作体系（別ページ、別音源向け） | `ControlSurface` を実装して `ControlLoop::addSurface()`（`EgEditPanel` が実例）し、`main.cpp` の `setUpPanel()` で役割名を割り当てる |
+| パネルの新しい機能（別ページ、別音源向け） | `PanelLogic::Module` を実装して役割名に応える（`PdPanel.hpp` が実例）、`main.cpp` の `setUpPanel()` で `addModule()`。単純な割当なら `param:<id>` の役割で足り、コード不要 |
 | 別の表示器（OLED・大きい LCD 等） | 16x2 I2C LCD は実装済み（`--lcd`）。別の表示器も `ParameterDisplay` を実装して `ParameterMonitor::addDisplay()` で登録するだけ（`ConsoleParameterDisplay` / `LcdParameterDisplay` が実例）。桁数だけ違う HD44780 系なら `TextDisplay` 実装の差し替えで済む。I2C の SSD1306 OLED が次の定番 |
 | プリセットを増やす | `PdSynthProcessor::registerFactoryPresets()` に 1 行足す（差分だけ書くスパース定義） |
 | 他の音源にプリセットを持たせる | `PresetBank` をメンバに持ち、`Processor::presets()` を override して Program Change を `handleEvent()` で処理（`PdSynthProcessor` が実例） |

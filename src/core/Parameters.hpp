@@ -52,6 +52,42 @@ public:
     // compares counts at its own pace (see host/ParameterWatcher.hpp).
     uint32_t changeCount() const { return changes_.load(std::memory_order_relaxed); }
 
+    // Bump the change count without changing the value: "show this one".
+    // A panel calls it when a button selects a parameter for editing
+    // (key follow select, ...) so the LCD names it before anything moves.
+    // Values are untouched, so nothing counts it as an edit.
+    void announce(){ changes_.fetch_add(1, std::memory_order_relaxed); }
+
+    // Number of discrete options this parameter has (a waveform menu, a
+    // sustain point, ...), encoded index / (steps - 1) in the normalized
+    // range; 0 for a continuous parameter. Set once at registration. A
+    // panel uses it so one encoder detent or one up/down press moves by
+    // exactly one option instead of by an arbitrary fraction.
+    int steps() const { return steps_; }
+    void setSteps(int steps){ steps_ = steps; }
+
+    // True for a performance control that is stored with presets but is
+    // not part of the sound (pitch bend, a CC-routing switch): moving it
+    // does not count as editing the preset (see PresetBank::isEdited).
+    bool transient() const { return transient_; }
+    void setTransient(bool transient){ transient_ = transient; }
+
+    // the option a discrete parameter is on (equal-width buckets, the
+    // same decoding pd uses); 0 for a continuous one
+    int option() const {
+        if(steps_ < 2){
+            return 0;
+        }
+        const int index = static_cast<int>(getNormalized() * static_cast<float>(steps_) + 1e-6f);
+        return std::clamp(index, 0, steps_ - 1);
+    }
+    void setOption(int option){
+        if(steps_ >= 2){
+            setNormalized(static_cast<float>(std::clamp(option, 0, steps_ - 1))
+                          / static_cast<float>(steps_ - 1));
+        }
+    }
+
     // normalized [0, 1] access (what a VST host / MIDI CC sees)
     float getNormalized() const {
         return (max_ > min_)? (get() - min_) / (max_ - min_) : 0.0f;
@@ -63,6 +99,8 @@ public:
 private:
     std::string id_, name_, unit_;
     float min_, max_, defaultValue_;
+    int steps_ = 0;
+    bool transient_ = false;
     std::atomic<float> value_;
     std::atomic<uint32_t> changes_{0};
 };

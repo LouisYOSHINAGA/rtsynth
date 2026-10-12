@@ -17,8 +17,10 @@ namespace rtsynth {
 // touching code. One statement per line, '#' starts a comment:
 //
 //   bus /dev/i2c-1               I2C bus of the expanders
-//   expander 0x20                declares expander 0, 1, 2, ... in order
-//   interrupt 4 [/dev/gpiochip0] Pi GPIO wired to every chip's INTA (optional)
+//   expander 0x20 [int 4]        declares expander 0, 1, 2, ... in order;
+//                                "int" = the Pi GPIO this chip's INTA is on
+//   interrupt 4 [/dev/gpiochip0] Pi GPIO wired to every chip's INTA, for the
+//                                chips without their own "int" (optional)
 //   scan-rate 1000               Hz, when there is no interrupt line
 //   encoder-quarters 4           quadrature edges per step (see QuadratureDecoder)
 //   encoder-step 0.01            normalized change per step
@@ -50,7 +52,8 @@ struct PanelConfig {
     };
 
     Mcp23017Panel::Options options;
-    std::vector<uint8_t> expanders;
+    struct Expander { uint8_t address = 0; int interruptLine = -1; };
+    std::vector<Expander> expanders;
     std::string shiftDevice;          // "" = no 74HC595 chain
     int shiftChips = 0;
     float encoderStep = 0.01f;
@@ -126,8 +129,13 @@ inline bool parsePanelConfig(std::istream& in, PanelConfig& config, std::string&
         try{
             if(key == "bus" && w.size() == 2){
                 config.options.busPath = w[1];
-            }else if(key == "expander" && w.size() == 2){
-                config.expanders.push_back(static_cast<uint8_t>(std::stoul(w[1], nullptr, 0)));
+            }else if(key == "expander" && (w.size() == 2 || (w.size() == 4 && w[2] == "int"))){
+                PanelConfig::Expander e;
+                e.address = static_cast<uint8_t>(std::stoul(w[1], nullptr, 0));
+                if(w.size() == 4){
+                    e.interruptLine = std::stoi(w[3]);
+                }
+                config.expanders.push_back(e);
             }else if(key == "interrupt" && (w.size() == 2 || w.size() == 3)){
                 config.options.interruptLine = std::stoi(w[1]);
                 if(w.size() == 3){

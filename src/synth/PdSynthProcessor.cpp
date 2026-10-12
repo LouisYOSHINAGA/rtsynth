@@ -271,7 +271,53 @@ void PdSynthProcessor::registerParameters(){
         paramHandles_[paramId] = parameters_.add(
             paramIdString(paramId), paramName(paramId), 0.0f, 1.0f,
             static_cast<float>(defaultParamValue(paramId)));
+        paramHandles_[paramId]->setSteps(optionCount(paramId));
     }
+    // performance controls, not part of the sound: moving them does not
+    // make a preset "edited" (they are stored with it all the same)
+    for(int paramId : {kParamPitchBend, kParamCcEditLine, kParamMonoTrigger,
+                       kParamPolyTrigger}){
+        paramHandles_[paramId]->setTransient(true);
+    }
+}
+
+// How many options a discrete parameter has — the numOptions every
+// decodeOptionIndex() / decodeSignedOption() call in pd uses for it.
+int PdSynthProcessor::optionCount(int paramId){
+    switch(paramId){
+        case kParamLineSelect:   return static_cast<int>(LineSelect::kNumLineSelects);
+        case kParamMonoPoly:     return 2;
+        case kParamCcEditLine:   return 2;
+        case kParamDetuneOctave: return 2 * kDetuneOctaveRange + 1;
+        case kParamDetuneNote:   return 2 * kDetuneNoteRange + 1;
+        case kParamDetuneFine:   return 2 * kDetuneFineRange + 1;
+        case kParamOctaveRange:  return 2 * kOctaveRangeMax + 1;
+        case kParamMasterTune:   return 2 * kMasterTuneRangeCents + 1;
+        case kParamLine1DcaKeyFollow:
+        case kParamLine2DcaKeyFollow:
+        case kParamLine1DcwKeyFollow:
+        case kParamLine2DcwKeyFollow:
+            return kNumKeyFollowOptions;
+        default:
+            break;
+    }
+    if(kParamLine1Begin <= paramId && paramId < kParamCcEditLine){
+        const int offset = (paramId - kParamLine1Begin) % kNumLineParams;
+        if(offset == kLineParamWaveformFirst){
+            return static_cast<int>(Waveform::kNumWaveforms);
+        }
+        if(offset == kLineParamWaveformSecond){
+            return kNumSecondWaveformOptions;
+        }
+        const int sub = (offset - kLineParamEgBegin) % kLineParamEgBlockSize;
+        if(sub == kEgParamSustainPoint){
+            return kNumEgSustainPointOptions;
+        }
+        if(sub == kEgParamSustainPoint + 1){
+            return kNumEgEndPointOptions;
+        }
+    }
+    return 0;
 }
 
 // The bank: the CZ-101 factory sounds, then the user slots. Both come
@@ -302,7 +348,14 @@ void PdSynthProcessor::registerFactoryPresets(){
         }
     };
     addGroup(pd_presets::kFactory, pd_presets::kFactoryCount);
-    addGroup(pd_presets::kUser, pd_presets::kUserCount);
+    addGroup(pd_presets::kUser, std::min(pd_presets::kUserCount, kUserSlots));
+    // the rest of the user bank starts as this host's init patch
+    for(int slot = pd_presets::kUserCount; slot < kUserSlots; slot++){
+        for(int paramId = 0; paramId < kNumPdParams; paramId++){
+            paramHandles_[paramId]->set(static_cast<float>(defaultParamValue(paramId)));
+        }
+        presets_.add(concat("User ", slot + 1));
+    }
 
     presets_.loadCurrent();  // start on slot 0, whatever the last one written was
 }
@@ -687,10 +740,19 @@ void PdSynthProcessor::applyPendingSwitch(){
     currTickSample_ = 0.0;
     if(kind == PendingSwitch::Program){
         presets_.select(pendingProgram_);
+    }else if(kind == PendingSwitch::Compare){
+        presets_.toggleCompare();
     }else{
         presets_.revertCurrent();
     }
     syncParameters();
+}
+
+void PdSynthProcessor::comparePreset(){
+    if(presets_.empty()){
+        return;
+    }
+    beginPresetSwitch(PendingSwitch::Compare, presets_.current());
 }
 
 void PdSynthProcessor::revertPreset(){

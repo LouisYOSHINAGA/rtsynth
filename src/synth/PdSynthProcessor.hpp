@@ -68,7 +68,12 @@ public:
         return count;
     }
 
-    void revertPreset() override;  // staged like a program change
+    void revertPreset() override;   // staged like a program change
+    void comparePreset() override;  // likewise
+
+    // The user group is padded to this many slots, so a panel with 16
+    // user tone buttons always has a slot behind each (CZ-101 layout).
+    static constexpr int kUserSlots = 16;
 
     // pd voices are expensive (per-sample transcendentals in pd's Voice and
     // PD generators), so capping polyphony is the main lever for fitting
@@ -96,6 +101,8 @@ private:
     static std::string paramIdString(int paramId);
     static std::string paramName(int paramId);
     static double defaultParamValue(int paramId);
+    // discrete option count of a parameter (0 = continuous)
+    static int optionCount(int paramId);
 
     // factory preset bank (constructor only)
     void registerFactoryPresets();
@@ -130,7 +137,7 @@ private:
     // stopped, so a silenced voice is one this host no longer mixes and
     // treats as free. Its EG stops advancing (that happens inside
     // generate()), so it costs nothing until it is allocated again.
-    enum class PendingSwitch : uint8_t { None, Program, Revert };
+    enum class PendingSwitch : uint8_t { None, Program, Revert, Compare };
 
     void beginPresetSwitch(PendingSwitch kind, int program);
     void applyPendingSwitch();

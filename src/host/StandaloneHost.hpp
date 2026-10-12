@@ -38,7 +38,8 @@ namespace rtsynth {
 // rewrite the whole parameter set and must not race with a Program Change
 // arriving on the audio thread at the same moment.
 enum class HostCommand : uint8_t {
-    RevertPreset,  // current slot back to the values the instrument started with
+    RevertPreset,   // current slot back to the values the instrument started with
+    ToggleCompare,  // A/B between the edited sound and the original
 };
 
 class StandaloneHost {

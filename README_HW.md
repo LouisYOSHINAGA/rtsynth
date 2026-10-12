@@ -28,8 +28,8 @@ Raspberry Pi と rtsynth でハードシンセを組むための、部品購入�
 | 1602 LCD + I2C バックパック（PCF8574、はんだ済みが楽） | 300〜600円 | パラメータ表示 | Step 5 |
 | タクトスイッチ（6mm 4本足が定番）×3〜4 | 1個 10〜30円 | プリセット切替・電源断 | Step 6 |
 | LED + 抵抗 330Ω〜1kΩ（任意） | 1個 10〜20円 | ボタンの押下表示 | Step 6 |
-| MCP23017-E/SP（DIP-28）×3 + 74HC595 ×6 | 1個 50〜250円 | エンコーダ 16 個のパネル | Step 7 |
-| ロータリーエンコーダ ×16 + DIP 化基板、タクトスイッチ ×9、LED ×42 | — | 同上 | Step 7 |
+| MCP23017-E/SP（DIP-28）×6 + 74HC595 ×8 | 1個 50〜250円 | フロントパネル | Step 7 |
+| ロータリーエンコーダ ×19 + DIP 化基板、タクトスイッチ ×33、LED ×61 | — | 同上 | Step 7 |
 
 - 秋月電子・スイッチサイエンス・Amazon・AliExpress あたりで全部揃います
 - はんだ付けを避けたいなら「ピンヘッダはんだ済み」のモジュールを選ぶこと
@@ -407,7 +407,7 @@ GPIO5 と GPIO6 に 1 組ずつ、3V3 は共用で作ります（**GPIO は 1 �
 | LED を付ける場合の 3V3 | **3V3**（5V 不可） | 1 または 17 | — |
 | **MCP23017**（Step 7）VDD / RESET | **3V3**（5V 不可） | 1 または 17 | — |
 | **MCP23017** SDA / SCL | LCD と共用 | 3 / 5 | GPIO2 / GPIO3 |
-| **MCP23017** INTA（推奨・全チップ共通） | 入力 | 7 | GPIO4 |
+| **MCP23017** INTA（チップ 0 / 1 / 2 / 3〜5 共通） | 入力 | 7 / 32 / 36 / 18 | GPIO4 / 12 / 16 / 24 |
 | **74HC595** VCC / /SRCLR | **3V3**（5V 不可） | 1 または 17 | — |
 | **74HC595** SER（チップ 0）/ SRCLK / RCLK | SPI MOSI / SCLK / CE1 | 19 / 23 / 26 | GPIO10 / 11 / 7 |
 
@@ -429,58 +429,39 @@ SW3 は 33 番と、隣の 34 番 GND です。
 - MCP3008（Step 3）とロータリーエンコーダ（Step 4）を使う場合の配線は、この表には
   含めていません。それぞれの Step の表を参照してください
 
-## 8. Step 7: エンコーダ 16 個のエディットパネル（MCP23017 ＋ 74HC595）
+## 8. Step 7: フロントパネル（MCP23017 ＋ 74HC595）
 
-line1 / line2 の EG（DCO/DCW/DCA）の rate / level を **8 個 × 2 列のエンコーダ**で直接いじる
-パネルです。**1 行が 1 つの line のエディタ**になっていて、行ごとに EG・rate/level・
-サステイン・エンドを独立に選びます。
+CZ-101 風のフロントパネルです。操作の一覧は
+[README の「フロントパネル」](README.md#フロントパネルmcp23017--74hc595)、ピン割当は
+`panels/pd_panel.conf`（**編集すれば自由に変えられます**。再ビルド不要）。
 
-入力（エンコーダ 32 本＋スイッチ 9 本 = 41 本）と LED（42 個）は Pi の GPIO に収まらないので、
+| 部 | スイッチ | エンコーダ | LED |
+|---|---|---|---|
+| 値の上下（abs） | 2 | （代わりに 1 でも可） | — |
+| 音色（preset/user・tone 1〜8・page・compare・initialize） | 13 | — | 12 |
+| line ごと（DCx・波形 1/2・key follow・rate/level・sus・end）× 2 | 7 × 2 | 8 × 2 | 18 × 2 |
+| line select | 1 | — | 4 |
+| detune / vibrato | 3 | 3 | 7 |
+| **合計** | **33** | **19** | **61** |
 
-- **入力は I2C の I/O エキスパンダ MCP23017 × 3**（LCD と同じ I2C バス）
-- **LED は SPI のシフトレジスタ 74HC595 × 6**（数珠つなぎ）
-
-に分けます。Pi 側の配線は I2C 2 本・SPI 3 本・電源（＋推奨の INT 1 本）だけです。
-
-```
-          ○DCO ○DCW ○DCA  ○RATE ○LEVEL
- row1:  [EG] [FIELD] [SUS] [END]     (1) (2) (3) (4) (5) (6) (7) (8)   ← line1 の EG ステップ
-                           sus LED    ○   ○   ○   ○   ○   ○   ○
-                           end LED        ○   ○   ○   ○   ○   ○   ○
- row2:  （同じ構成で line2）
-
- [LINE]  ○Line1 ○Line2 ○1+1' ○1+2'
-```
-
-| スイッチ / ツマミ | 押すたびに | LED |
-|---|---|---|
-| EG | その行で編集する EG を DCO → DCW → DCA → DCO | DCO / DCW / DCA |
-| FIELD | rate ↔ level | RATE / LEVEL |
-| SUS | サステインポイントを Off → 1 → 2 → … → 7 → Off | sus 1〜7（**Off は全消灯**） |
-| END | エンドポイントを 2 → 3 → … → 8 → 2 | end 2〜8 |
-| LINE | Line Select を Line 1 → Line 2 → 1+1' → 1+2' → Line 1 | Line ×4 |
-| エンコーダ K | その行の選択中の EG の rate K / level K を増減（level は 7 つなので 8 番目は無効） | — |
-
-sus / end / line の LED は**パラメータの実際の値**を表示するので、プリセットを切り替えたり
-MIDI CC で変えたりしても正しく追従します（表示するのはその行で選択中の EG のポイント）。
-回した値は今までどおり LCD に `L1 DCW Rate 3` / `0.787 (1063 ms)` の形で出ます。
+入力（スイッチ 33 ＋ エンコーダ 19 × 2 本 = **71 本**）は **MCP23017 × 6**、
+LED 61 個は **74HC595 × 8** に載せます。Pi 側の配線は I2C 2 本・SPI 3 本・INT 4 本・電源だけです。
 
 ### 部品
 
 | 部品 | 数 | 備考 |
 |---|---|---|
-| MCP23017-E/SP（DIP-28） | 3 | 入力用。**3.3V で使う** |
-| 74HC595（U74HC595AG 等） | 6 | LED 用。**3.3V で使う** |
-| ロータリーエンコーダ（ALPS 無段階など）＋ DIP 化基板（RECNV-3 等） | 16 | A/B/C の 3 本を使う |
-| タクトスイッチ | 9 | 行ごとに EG / FIELD / SUS / END、全体で LINE |
-| LED ＋ 抵抗 1kΩ 前後 | 42 | 行ごとに DCx 3・rate/level 2・sus 7・end 7、全体で line 4 |
-| 0.1µF セラミックコンデンサ | 9 | 各 IC の VCC–GND 間、足の近くに |
+| MCP23017-E/SP（DIP-28） | 6 | 入力用。**3.3V で使う**。入力に使えるのは 1 個 14 本（計 84 本、13 本余り） |
+| 74HC595（U74HC595AG 等） | 8 | LED 用。**3.3V で使う**（計 64 出力、3 本余り） |
+| ロータリーエンコーダ（ALPS 無段階など）＋ DIP 化基板（RECNV-3 等） | 19 | A/B/C の 3 本を使う |
+| タクトスイッチ | 33 | |
+| LED ＋ 抵抗 1kΩ 前後 | 61 | |
+| 0.1µF セラミックコンデンサ | 14 | 各 IC の VCC–GND 間、足の近くに |
 
-LED は 42 個ありますが、**同時に点くのは最大 9 個**（行ごとに DCx・field・sus・end 各 1、
-＋ line 1。sus が Off なら更に少ない）。1kΩ（約 1.3mA）なら合計 15mA 程度で、
-74HC595 の電流制限にも 3V3 の電源にも十分余裕があります。
+LED は 61 個ありますが同時に点くのは多くても 30 個弱（波形の 2 進表示が全点灯の場合など）で、
+1kΩ（約 1.3mA）なら合計 40mA 程度です。595 1 個あたりは最大 8 個 ≒ 10mA で、どちらも余裕があります。
 
-### MCP23017 の配線（入力 × 3）
+### MCP23017 の配線（入力 × 6）
 
 | MCP23017 ピン | 接続先 |
 |---|---|
@@ -489,16 +470,32 @@ LED は 42 個ありますが、**同時に点くのは最大 9 個**（行ご�
 | 12 SCL | Pi 物理 5（GPIO3）— LCD と共用 |
 | 13 SDA | Pi 物理 3（GPIO2）— LCD と共用 |
 | 18 RESET | **3V3 へ直結**（浮かせると勝手にリセットされる） |
-| 15/16/17 A0/A1/A2 | アドレス: チップ 0 = 全部 GND (0x20)、チップ 1 = A0 だけ 3V3 (0x21)、チップ 2 = A1 だけ 3V3 (0x22) |
-| 20 INTA | （推奨）3 チップの INTA をまとめて Pi 物理 7（GPIO4）へ |
-| 21〜28 GPA0〜7 / 1〜8 GPB0〜7 | エンコーダ・スイッチ（下記） |
+| 15/16/17 A0/A1/A2 | アドレス = 0x20 + (A2 A1 A0 の 2 進)。チップ 0〜5 = 0x20〜0x25（例: 0x23 = A0・A1 を 3V3、A2 を GND） |
+| 20 INTA | 下表の Pi GPIO へ |
+| 21〜28 GPA0〜7 / 1〜8 GPB0〜7 | エンコーダ・スイッチ（`pd_panel.conf` の割当） |
+
+| チップ | アドレス | 載っているもの | INTA → Pi |
+|---|---|---|---|
+| 0 | 0x20 | line 1 のエンコーダ 1〜7 | GPIO4（物理 7） |
+| 1 | 0x21 | line 2 のエンコーダ 1〜7 | GPIO12（物理 32） |
+| 2 | 0x22 | 両 line のエンコーダ 8、detune/vib エンコーダ 3 個、line 1 の field/sus/end、line select | GPIO16（物理 36） |
+| 3 | 0x23 | 両 line の DCx/波形 1/波形 2/key follow、line 2 の field/sus/end、vibrato のスイッチ 3 個 | GPIO24（物理 18）※ |
+| 4 | 0x24 | preset/user・tone 1〜8・page・compare・initialize | GPIO24 ※ |
+| 5 | 0x25 | abs ↑↓（残り 12 本は空き） | GPIO24 ※ |
+
+※ チップ 3〜5 はスイッチだけなので **INTA を 3 本まとめて GPIO24 に**繋ぎます（オープンドレインに
+設定されるので直結で安全）。エンコーダの載ったチップ 0〜2 は**それぞれ専用の INT 線**にしてあり、
+ツマミを回したときは**そのチップだけ**を読みます（I2C 既定の 100 kHz で 1 回約 0.5 ms）。
+全部を 1 本にまとめると 6 チップ全部を毎回読む（約 2.8 ms）ことになり、速く回したときに
+取りこぼしやすくなります。
 
 > ⚠ **GPA7 / GPB7 は入力に使えません。** 現行の MCP23017 はこの 2 本の入力機能が
 > 削除されています（入力にすると I2C 通信を壊すことがある）。設定ファイルでここに
-> エンコーダやスイッチを割り当てると起動時にエラーになります。
-> このためチップ 1 個に載るエンコーダは 7 個で、8 番目のツマミはチップ 2 に回しています。
+> エンコーダやスイッチを割り当てると起動時にエラーになります。このためエンコーダは
+> チップ 1 個に 7 個までです。
 
 > ⚠ **アドレス 0x27 は使わない。** LCD バックパック（PCF8574）が 0x27 にいます。
+> 0x26 は空いているので、将来もう 1 個足せます（それ以上は 2 本目の I2C バスが必要）。
 
 - **エンコーダ**: A, B をエキスパンダのピンへ、C を GND へ。MCP23017 の内部プルアップ
   （約 100kΩ）を使うので外付け抵抗は不要です。DIP 化基板にプルアップ抵抗や RC フィルタが
@@ -507,7 +504,7 @@ LED は 42 個ありますが、**同時に点くのは最大 9 個**（行ご�
 - **スイッチ**: 片足をエキスパンダのピン、もう片足を GND。チャタリングはソフトで除去（5 ms）
 - エンコーダが逆回転したら、設定ファイルでその行の A と B を入れ替えます
 
-### 74HC595 の配線（LED × 6 チップ数珠つなぎ）
+### 74HC595 の配線（LED × 8 チップ数珠つなぎ）
 
 | 74HC595 ピン | 接続先 |
 |---|---|
@@ -520,50 +517,45 @@ LED は 42 個ありますが、**同時に点くのは最大 9 個**（行ご�
 | 10 /SRCLR | 3V3 |
 | 15, 1〜7 QA〜QH | `Q → 抵抗 → LED（アノード→カソード） → GND` |
 
+| 595 | LED |
+|---|---|
+| sr0 / sr1 | line 1 / line 2 の sus・end ステップ 1〜8（QA〜QH = ステップ 1〜8、ツマミの下に並べる） |
+| sr2 | line 1 の DCO/DCW/DCA・RATE/LEVEL、line 2 の DCO/DCW/DCA |
+| sr3 | line 2 の RATE/LEVEL、line 1 の波形 1・波形 2（各 3 ビット） |
+| sr4 | line 2 の波形 1・波形 2（QG, QH 空き） |
+| sr5 | line select 1 / 2 / 1' / 2'、vib on、detune、vib（QH 空き） |
+| sr6 | vib 波形 4 個、preset、user、page、compare |
+| sr7 | tone 1〜8 |
+
 - SPI の CE1 をラッチ（RCLK）に使います。転送が終わって CE1 が上がった瞬間に全チップの
   出力が一斉に切り替わるので、シフト途中の状態で LED がちらつくことはありません
 - CE0（GPIO8）は MCP3008 用に空いたままです（SPI バスは共用できます）
-- `raspi-config` で **SPI を有効化**してください（`/dev/spidev0.1` が出来ます）
 - 設定ファイルのピン名は `sr<チップ>.<ビット>`（ビット 0 = QA … 7 = QH、チップ 0 = MOSI に
   繋いだもの）。LED を逆向き（3V3 → 抵抗 → LED → Q）にするなら `active-low` を付けます
-
-### 既定のピン割当（`panels/pd_2line.conf`）
-
-**このファイルを編集すれば自由に変えられます**（再ビルド不要）。
-
-| IC | 割当 |
-|---|---|
-| MCP 0 (0x20) | 行 1 のエンコーダ 1〜7（GPA0〜6, GPB0〜6） |
-| MCP 1 (0x21) | 行 2 のエンコーダ 1〜7 |
-| MCP 2 (0x22) | 行 1 / 2 のエンコーダ 8（GPA0/1, GPA2/3）、行 1 の EG / FIELD / SUS / END（GPA4〜6, GPB0）、行 2 の同（GPB1〜4）、LINE（GPB5） |
-| 595 sr0 / sr2 | 行 1 / 行 2 の sus LED 1〜7（QA〜QG） |
-| 595 sr1 / sr3 | 行 1 / 行 2 の end LED 2〜8（QB〜QH） |
-| 595 sr4 | DCO / DCW / DCA LED（行 1 = QA〜QC、行 2 = QD〜QF） |
-| 595 sr5 | RATE / LEVEL LED（行 1 = QA/QB、行 2 = QC/QD）、Line LED ×4（QE〜QH） |
-
-sus も end も「ステップ k の LED = Q の k 番目（QA = 1）」なので、**Q の順にツマミの下へ
-並べれば位置が揃います**。空き: MCP 2 の GPB6（入力。プリセット切替スイッチなどに）、
-各 MCP の GPA7/GPB7（出力専用）、sr0.QH・sr1.QA・sr2.QH・sr3.QA・sr4.QG/QH。
+- **波形の 2 進表示**: 波形 1 は 1〜8、波形 2 は Off（全消灯）と 1〜8。3 ビットで表せるのは
+  7 までなので、**8 のときは 3 個とも点滅**します。点滅でなく表示したいときは 4 個目の LED を
+  空き出力に足して `rowR.waveN.bit3` として書き加えるだけです（8 = 1000）
 
 ### 設定と確認
 
 ```sh
 sudo raspi-config        # Interface Options → I2C と SPI を有効化
-i2cdetect -y 1           # 20 21 22 (+ 27 = LCD) が見えること
+i2cdetect -y 1           # 20〜25 (+ 27 = LCD) が見えること
 ls /dev/spidev0.1        # SPI が有効なら存在する
 
-./build/rtsynth --synth pd --lcd 0x27 --panel panels/pd_2line.conf -v param
-#   Panel: 3 MCP23017 on /dev/i2c-1, 16 encoders, 9 buttons, 42 LEDs
-#          (6 x 74HC595 on /dev/spidev0.1), polled at 1000 Hz
-# 行 1 のツマミ 3 を回す → [param] L1 DCO Rate 3 = ...
+./build/rtsynth --synth pd --lcd 0x27 --panel panels/pd_panel.conf -v param
+#   [panel] vibrato: the instrument has no parameter 'vibrato' ...   ← pd に vibrato が入るまで
+#   Panel: 6 MCP23017 on /dev/i2c-1, 19 encoders, 33 buttons, 61 LEDs
+#          (8 x 74HC595 on /dev/spidev0.1), per-chip interrupts
+# line 1 のツマミ 3 を回す → [param] L1 DCO Rate 3 = ...
 ```
 
-- **INT 線は引くことを推奨します**（3 チップの INTA を 1 本にまとめて GPIO4 へ。設定ファイルの
-  `interrupt 4` を有効に）。ピンが変化したときだけ読みに行くので、I2C の通信量と CPU が
-  ほぼゼロになります。引かない場合は 3 チップを読み続けます（I2C 既定の 100 kHz で 1 周
-  約 1.4 ms、実質 700 Hz 程度。手回しのエンコーダには十分ですが、LCD とバスを取り合います）
 - 1 ステップの細かさは `encoder-quarters`（無段階 24 パルスなら 4 = 1 周 24 ステップ、
-  2 = 48 ステップ）と `encoder-step`（1 ステップでの変化量、0.01 = 100 ステップで全域）で調整
+  2 = 48 ステップ）と `encoder-step`（1 ステップでの変化量、0.01 = 100 ステップで全域）で調整。
+  detune など離散値のパラメータは常に 1 クリック = 1 段です
+- 速く回して取りこぼすようなら I2C を 400 kHz に上げます（`/boot/firmware/config.txt` に
+  `dtparam=i2c_arm_baudrate=400000`）。ただし LCD の PCF8574 は 100 kHz 品なので、
+  LCD の表示が乱れないか確認してください
 - `[warning] I2C errors on the expander panel` が出る場合は配線（特に SDA/SCL・GND・RESET）
   を確認してください
 - LED が 1 つもつかない / 全部ずれる: SPI 有効化、RCLK が CE1（物理 26）か、
@@ -650,7 +642,7 @@ journalctl -u rtsynth -f      # ログ確認
   --enc 17,27=line1_dca_rate1 --enc 22,23=line1_dca_rate2 \
   --lcd 0x27 \
   --button 5=preset-prev --button 6=preset-next --button 13=revert \
-  --panel panels/pd_2line.conf \
+  --panel panels/pd_panel.conf \
   -v
 ```
 

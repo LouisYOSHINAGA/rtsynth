@@ -19,7 +19,6 @@
 #include <vector>
 
 #include "host/ControlLoop.hpp"
-#include "host/EgEditPanel.hpp"
 #include "host/GpioButtonInput.hpp"
 #include "host/GpioEncoderInput.hpp"
 #include "host/I2cLcd1602.hpp"
@@ -27,6 +26,8 @@
 #include "host/Mcp23017Panel.hpp"
 #include "host/Mcp3008Input.hpp"
 #include "host/PanelConfig.hpp"
+#include "host/PanelLogic.hpp"
+#include "host/PdPanel.hpp"
 #include "host/ParameterDisplay.hpp"
 #include "host/ParameterMonitor.hpp"
 #include "host/RawMidiInput.hpp"
@@ -401,24 +402,19 @@ bool parseArguments(int argc, char* argv[], CliOptions& cli, bool& exitRequested
 }
 
 // Builds the --panel hardware from its config file and gives every
-// control its job. Roles are resolved here, in one place:
+// control its job. The roles are resolved by PanelLogic and the pd panel
+// modules (PdPanel.hpp: rowR.*, line, tone*, compare, dv.*, ..., plus the
+// generic abs.* and param:<id>); a button role none of them knows may be
+// a host action (preset-next, preset-prev, revert, panic).
 //
-//   encoder  rowR.K          -> EgEditPanel (row R, step K)
-//            param:<id>      -> that parameter, fixed (like --enc)
-//   button   rowR.eg/field/sus/end/dco/.../rate/level, line -> EgEditPanel
-//            preset-next/preset-prev/revert/panic           -> host action
-//   led      rowR.dco/.../rate/level/susK/endK, line.K      -> EgEditPanel
-//            (on an expander pin or on the 74HC595 chain: sr<chip>.<bit>)
-//
-// panelButtonIds[i] is the EgEditPanel id of expander button i, or -1
-// when panelButtonActions[i] holds a host action instead.
+// buttonHandlers[i] is what expander button i does.
 bool setUpPanel(const std::string& path, rtsynth::Mcp23017Panel& panel,
-                rtsynth::ShiftRegisterLeds& shiftLeds, rtsynth::EgEditPanel& egPanel, rtsynth::ControlLoop& controlLoop,
-                rtsynth::Processor& synth,
-                const std::function<rtsynth::Parameter*(const std::string&)>& findParameter,
+                rtsynth::ShiftRegisterLeds& shiftLeds, rtsynth::PanelLogic& logic,
+                rtsynth::ControlLoop& controlLoop, rtsynth::Processor& synth,
+                const rtsynth::PdToneSelect::Host& toneHost,
                 const std::function<bool(const std::string&, const std::string&)>& checkAction,
-                std::vector<std::string>& panelButtonActions,
-                std::vector<int>& panelButtonIds){
+                const std::function<void(const std::string&)>& performAction,
+                std::vector<rtsynth::PanelLogic::ButtonFn>& buttonHandlers){
     rtsynth::PanelConfig config;
     std::string error;
     if(!rtsynth::loadPanelConfig(path, config, error)){
@@ -430,53 +426,27 @@ bool setUpPanel(const std::string& path, rtsynth::Mcp23017Panel& panel,
         return false;
     };
 
-    for(uint8_t address : config.expanders){
-        if(panel.addExpander(address) < 0){
+    for(const auto& expander : config.expanders){
+        if(panel.addExpander(expander.address, expander.interruptLine) < 0){
             std::cerr << "--panel: " << path << ": " << panel.lastError() << std::endl;
             return false;
         }
     }
 
-    // The EG editor is only bound when the file uses it, so a panel of
-    // plain param: knobs also works on instruments without pd's EGs.
-    bool usesEgPanel = false;
-    for(const auto& e : config.encoders){
-        int row = 0, step = 0;
-        usesEgPanel |= rtsynth::EgEditPanel::parseEncoderRole(e.role, row, step);
-    }
-    for(const auto& b : config.buttons){
-        usesEgPanel |= (egPanel.buttonId(b.role) >= 0);
-    }
-    usesEgPanel |= !config.leds.empty();  // every LED role belongs to it
-    if(usesEgPanel){
-        if(!egPanel.bind(synth.parameters(), error)){
-            std::cerr << "--panel: the EG editor roles (rowR.K, rowR.eg, line, ...) need the pd "
-                         "synth (--synth pd): " << error << std::endl;
-            return false;
-        }
-        egPanel.setStepSize(config.encoderStep);
-    }
+    rtsynth::ParameterSet& parameters = synth.parameters();
+    logic.setStepSize(config.encoderStep);
+    logic.addModule(std::make_unique<rtsynth::PdLineEditor>(logic, parameters));
+    logic.addModule(std::make_unique<rtsynth::PdLineSelect>(logic, parameters));
+    logic.addModule(std::make_unique<rtsynth::PdToneSelect>(synth.presets(), toneHost));
+    logic.addModule(std::make_unique<rtsynth::PdDetuneVibrato>(logic, parameters));
 
     for(const auto& e : config.encoders){
         const int channel = panel.addEncoder(e.a, e.b);
         if(channel < 0){
             return fail(e.line, panel.lastError());
         }
-        int row = 0, step = 0;
-        if(rtsynth::EgEditPanel::parseEncoderRole(e.role, row, step)){
-            if(!egPanel.attachEncoder(row, step, &panel.encoders(), channel)){
-                return fail(e.line, "no encoder slot '" + e.role + "' (rows 1-2, steps 1-8)");
-            }
-        }else if(e.role.rfind("param:", 0) == 0){
-            rtsynth::Parameter* parameter = findParameter(e.role.substr(6));
-            if(parameter == nullptr){
-                return false;
-            }
-            controlLoop.addRelativeMapping(&panel.encoders(), channel, parameter,
-                                           config.encoderStep);
-        }else{
-            return fail(e.line, "unknown encoder role '" + e.role
-                                + "' (rowR.K or param:<id>)");
+        if(!logic.attachEncoder(e.role, &panel.encoders(), channel)){
+            return fail(e.line, "unknown encoder role '" + e.role + "'");
         }
     }
 
@@ -484,12 +454,18 @@ bool setUpPanel(const std::string& path, rtsynth::Mcp23017Panel& panel,
         if(panel.addButton(b.pin) < 0){
             return fail(b.line, panel.lastError());
         }
-        const int id = egPanel.buttonId(b.role);
-        if(id < 0 && !checkAction("--panel line " + std::to_string(b.line), b.role)){
-            return false;
+        rtsynth::PanelLogic::ButtonFn fn = logic.button(b.role);
+        if(!fn){
+            if(!checkAction("--panel line " + std::to_string(b.line), b.role)){
+                return false;
+            }
+            fn = [performAction, action = b.role](bool pressed){
+                if(pressed){
+                    performAction(action);
+                }
+            };
         }
-        panelButtonIds.push_back(id);
-        panelButtonActions.push_back(id < 0? b.role : "");
+        buttonHandlers.push_back(std::move(fn));
     }
 
     shiftLeds.setChainLength(config.shiftChips);
@@ -505,9 +481,13 @@ bool setUpPanel(const std::string& path, rtsynth::Mcp23017Panel& panel,
                 return fail(l.line, panel.lastError());
             }
         }
-        if(!egPanel.attachLed(l.role, output, channel)){
+        if(!logic.attachLed(l.role, output, channel)){
             return fail(l.line, "unknown LED role '" + l.role + "'");
         }
+    }
+
+    for(const std::string& warning : logic.warnings()){
+        std::cerr << "[panel] " << warning << std::endl;
     }
 
     if(!panel.open(config.options)){
@@ -516,8 +496,11 @@ bool setUpPanel(const std::string& path, rtsynth::Mcp23017Panel& panel,
     if(config.shiftChips > 0 && !shiftLeds.open(config.shiftDevice)){
         return false;
     }
-    if(usesEgPanel){
-        controlLoop.addSurface(&egPanel);
+    controlLoop.addSurface(&logic);
+
+    int interruptLines = 0;
+    for(const auto& expander : config.expanders){
+        interruptLines += (expander.interruptLine >= 0)? 1 : 0;
     }
     std::cout << "Panel: " << panel.numExpanders() << " MCP23017 on "
               << config.options.busPath << ", " << config.encoders.size() << " encoders, "
@@ -526,7 +509,9 @@ bool setUpPanel(const std::string& path, rtsynth::Mcp23017Panel& panel,
                       ? " (" + std::to_string(config.shiftChips) + " x 74HC595 on "
                         + config.shiftDevice + ")"
                       : std::string())
-              << (config.options.interruptLine >= 0
+              << (interruptLines > 0
+                      ? ", per-chip interrupts"
+                  : config.options.interruptLine >= 0
                       ? ", interrupt on GPIO" + std::to_string(config.options.interruptLine)
                       : ", polled at " + std::to_string(config.options.scanRateHz) + " Hz")
               << std::endl;
@@ -658,10 +643,9 @@ int main(int argc, char* argv[]){
     rtsynth::GpioButtonInput buttons;          // buttons on Pi GPIO
     rtsynth::Mcp23017Panel panel;              // encoders/buttons/LEDs on expanders
     rtsynth::ShiftRegisterLeds shiftLeds;      // LEDs on a 74HC595 chain
-    rtsynth::EgEditPanel egPanel;              // what the expander encoders edit
+    rtsynth::PanelLogic panelLogic(synth->parameters());  // what the panel controls do
     std::vector<std::string> gpioButtonActions;
-    std::vector<std::string> panelButtonActions;  // "" = an EgEditPanel role
-    std::vector<int> panelButtonIds;
+    std::vector<rtsynth::PanelLogic::ButtonFn> panelButtonHandlers;
     rtsynth::ControlLoop controlLoop(&adc, &encoders);
 
     const bool havePresets = (presets != nullptr && !presets->empty());
@@ -753,19 +737,23 @@ int main(int argc, char* argv[]){
     }
 
     if(!cli.panelConfig.empty()){
-        if(!setUpPanel(cli.panelConfig, panel, shiftLeds, egPanel, controlLoop, *synth, findParameter,
-                       checkAction, panelButtonActions, panelButtonIds)){
+        // Tone selection talks to the audio thread the same way the
+        // preset buttons do: from the ControlLoop thread, through the
+        // host's control queues.
+        rtsynth::PdToneSelect::Host toneHost;
+        toneHost.programChange = [&host](int program){
+            host.sendControlEvent(rtsynth::MidiEvent::programChange(
+                0, static_cast<uint8_t>(program)));
+        };
+        toneHost.toggleCompare = [&host]{ host.sendCommand(rtsynth::HostCommand::ToggleCompare); };
+        toneHost.initialize = [&host]{ host.sendCommand(rtsynth::HostCommand::RevertPreset); };
+        if(!setUpPanel(cli.panelConfig, panel, shiftLeds, panelLogic, controlLoop, *synth,
+                       toneHost, checkAction, performAction, panelButtonHandlers)){
             return 1;
         }
         controlLoop.addButtons(&panel.buttons(),
-            [&panelButtonIds, &panelButtonActions, &egPanel, performAction](
-                    int channel, bool pressed){
-                const size_t i = static_cast<size_t>(channel);
-                if(panelButtonIds[i] >= 0){
-                    egPanel.onButton(panelButtonIds[i], pressed);
-                }else if(pressed){
-                    performAction(panelButtonActions[i]);
-                }
+            [&panelButtonHandlers](int channel, bool pressed){
+                panelButtonHandlers[static_cast<size_t>(channel)](pressed);
             });
     }
 

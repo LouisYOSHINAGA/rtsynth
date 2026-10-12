@@ -36,6 +36,8 @@ bool StandaloneHost::start(const Options& options){
             while(commands_.pop(command)){
                 if(command == HostCommand::RevertPreset){
                     processor_.revertPreset();
+                }else if(command == HostCommand::ToggleCompare){
+                    processor_.comparePreset();
                 }
             }
 

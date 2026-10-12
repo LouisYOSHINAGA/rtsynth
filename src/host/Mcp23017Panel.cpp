@@ -37,7 +37,7 @@ constexpr uint16_t kOutputOnlyPins = (1u << 7) | (1u << 15);
 
 // with the interrupt line wired, still scan this often: it settles
 // debounced buttons and flushes LED changes
-constexpr int kInterruptFallbackMs = 10;
+constexpr int kInterruptFallbackMs = 20;
 
 int64_t nowMs(){
     return std::chrono::duration_cast<std::chrono::milliseconds>(
@@ -59,7 +59,7 @@ std::string Mcp23017Panel::pinName(ExpanderPin pin){
     return name;
 }
 
-int Mcp23017Panel::addExpander(uint8_t address){
+int Mcp23017Panel::addExpander(uint8_t address, int interruptLine){
     if(chips_.size() >= kMaxChips){
         error_ = "at most 8 MCP23017 fit on one bus";
         return -1;
@@ -76,6 +76,7 @@ int Mcp23017Panel::addExpander(uint8_t address){
     }
     Chip chip;
     chip.address = address;
+    chip.interruptLine = interruptLine;
     chips_.push_back(chip);
     return static_cast<int>(chips_.size()) - 1;
 }
@@ -149,6 +150,36 @@ bool Mcp23017Panel::open(const Options& options){
         return false;
     }
     prepareOffline(options);
+
+    // which Pi GPIO serves which chip
+    irqLines_.clear();
+    bool anyLine = false, missingLine = false;
+    for(Chip& chip : chips_){
+        const int line = (chip.interruptLine >= 0)? chip.interruptLine : options_.interruptLine;
+        chip.irqIndex = -1;
+        if(line < 0){
+            missingLine |= (chip.inputMask != 0);
+            continue;
+        }
+        anyLine = true;
+        auto it = std::find(irqLines_.begin(), irqLines_.end(), static_cast<unsigned int>(line));
+        if(it == irqLines_.end()){
+            irqLines_.push_back(static_cast<unsigned int>(line));
+            it = irqLines_.end() - 1;
+        }
+        chip.irqIndex = static_cast<int>(it - irqLines_.begin());
+    }
+    if(anyLine && missingLine){
+        error_ = "some expanders have an interrupt line and some do not — "
+                 "give every expander with inputs one (or set a shared one)";
+        std::cerr << error_ << std::endl;
+        return false;
+    }
+    if(irqLines_.size() > GPIO_V2_LINES_MAX){
+        error_ = "too many interrupt lines";
+        return false;
+    }
+
     if(!bus_.open(options_.busPath)){
         return false;
     }
@@ -158,7 +189,7 @@ bool Mcp23017Panel::open(const Options& options){
             return false;
         }
     }
-    if(options_.interruptLine >= 0 && !openInterrupt()){
+    if(!openInterrupt()){
         close();
         return false;
     }
@@ -199,7 +230,7 @@ bool Mcp23017Panel::configureChip(Chip& chip){
     const uint16_t inputs = static_cast<uint16_t>(~chip.outputMask);
     const uint16_t unused = static_cast<uint16_t>(~(chip.inputMask | chip.outputMask));
     const uint16_t pullups = options_.pullups? inputs : unused;
-    const uint16_t interrupts = (options_.interruptLine >= 0)? chip.inputMask : 0;
+    const uint16_t interrupts = (chip.irqIndex >= 0)? chip.inputMask : 0;
     const size_t index = static_cast<size_t>(&chip - chips_.data());
     const uint16_t olat = ledLevels_[index].load(std::memory_order_relaxed);
 
@@ -224,14 +255,20 @@ bool Mcp23017Panel::configureChip(Chip& chip){
 }
 
 bool Mcp23017Panel::openInterrupt(){
+    if(irqLines_.empty()){
+        return true;  // polled panel
+    }
     const int chipFd = ::open(options_.interruptChip.c_str(), O_RDWR);
     if(chipFd < 0){
         std::cerr << "Failed to open GPIO chip " << options_.interruptChip << std::endl;
         return false;
     }
+    // every INT line in one request: one fd to poll, events name their line
     gpio_v2_line_request request{};
-    request.offsets[0] = static_cast<unsigned int>(options_.interruptLine);
-    request.num_lines = 1;
+    for(size_t i = 0; i < irqLines_.size(); i++){
+        request.offsets[i] = irqLines_[i];
+    }
+    request.num_lines = static_cast<uint32_t>(irqLines_.size());
     // open-drain INT, active low: the Pi's pull-up idles it high
     request.config.flags = GPIO_V2_LINE_FLAG_INPUT
                          | GPIO_V2_LINE_FLAG_EDGE_FALLING
@@ -240,38 +277,46 @@ bool Mcp23017Panel::openInterrupt(){
     const bool ok = ioctl(chipFd, GPIO_V2_GET_LINE_IOCTL, &request) == 0 && request.fd >= 0;
     ::close(chipFd);
     if(!ok){
-        std::cerr << "Failed to request GPIO line " << options_.interruptLine
-                  << " for the expander interrupt" << std::endl;
+        std::cerr << "Failed to request the expander interrupt GPIO line(s)";
+        for(unsigned int line : irqLines_){
+            std::cerr << " " << line;
+        }
+        std::cerr << std::endl;
         return false;
     }
     interruptFd_ = request.fd;
     return true;
 }
 
-bool Mcp23017Panel::interruptAsserted() const {
+uint64_t Mcp23017Panel::assertedLines() const {
     gpio_v2_line_values values{};
-    values.mask = 0x1;
+    values.mask = (irqLines_.size() >= 64)? ~0ull : ((1ull << irqLines_.size()) - 1);
     if(ioctl(interruptFd_, GPIO_V2_LINE_GET_VALUES_IOCTL, &values) < 0){
-        return false;
+        return 0;
     }
-    return (values.bits & 0x1) == 0;  // active low
+    return ~values.bits & values.mask;  // active low
 }
 
 void Mcp23017Panel::scanAll(){
     const int64_t now = nowMs();
     for(size_t c = 0; c < chips_.size(); c++){
-        if(chips_[c].inputMask == 0){
-            continue;  // LED-only chip: nothing to read
-        }
-        uint8_t bytes[2];
-        // reading GPIO also clears the chip's interrupt
-        if(!bus_.readRegisters(chips_[c].address, kRegGpioA, bytes, 2)){
-            readErrors_.fetch_add(1, std::memory_order_relaxed);
-            continue;
-        }
-        processSnapshot(static_cast<int>(c),
-                        static_cast<uint16_t>(bytes[0] | (bytes[1] << 8)), now);
+        scanChip(c, now);
     }
+}
+
+bool Mcp23017Panel::scanChip(size_t c, int64_t now){
+    if(chips_[c].inputMask == 0){
+        return true;  // LED-only chip: nothing to read
+    }
+    uint8_t bytes[2];
+    // reading GPIO also clears the chip's interrupt
+    if(!bus_.readRegisters(chips_[c].address, kRegGpioA, bytes, 2)){
+        readErrors_.fetch_add(1, std::memory_order_relaxed);
+        return false;
+    }
+    processSnapshot(static_cast<int>(c),
+                    static_cast<uint16_t>(bytes[0] | (bytes[1] << 8)), now);
+    return true;
 }
 
 void Mcp23017Panel::flushLeds(){
@@ -353,38 +398,69 @@ void Mcp23017Panel::processSnapshot(int chipIndex, uint16_t bits, int64_t now){
 
 void Mcp23017Panel::scanThread(){
     using Clock = std::chrono::steady_clock;
-    const auto period = std::chrono::microseconds(
-        1000000 / std::max(1, options_.scanRateHz));
-    auto next = Clock::now();
-    bool rescan = false;
 
-    while(running_.load()){
-        if(interruptFd_ >= 0){
-            if(!rescan){
-                pollfd fd{interruptFd_, POLLIN, 0};
-                if(::poll(&fd, 1, kInterruptFallbackMs) > 0 && (fd.revents & POLLIN)){
-                    gpio_v2_line_event events[16];
-                    if(::read(interruptFd_, events, sizeof(events)) < 0){
-                        // nothing to recover; the scan below runs regardless
-                    }
-                }
-            }
-        }else{
+    if(interruptFd_ < 0){
+        // polled: every chip at scanRateHz
+        const auto period = std::chrono::microseconds(
+            1000000 / std::max(1, options_.scanRateHz));
+        auto next = Clock::now();
+        while(running_.load()){
             next += period;
             const auto now = Clock::now();
             if(next < now){
                 next = now;  // fell behind (bus stall): do not try to catch up
             }
             std::this_thread::sleep_until(next);
+            scanAll();
+            flushLeds();
+        }
+        return;
+    }
+
+    // interrupt-driven: read the chips whose line is low, nothing else
+    uint64_t pending = 0;          // lines to serve, bit = irqLines_ index
+    int64_t lastFullScan = nowMs();
+    while(running_.load()){
+        if(pending == 0){
+            pollfd fd{interruptFd_, POLLIN, 0};
+            if(::poll(&fd, 1, kInterruptFallbackMs) > 0 && (fd.revents & POLLIN)){
+                gpio_v2_line_event events[16];
+                const ssize_t bytes = ::read(interruptFd_, events, sizeof(events));
+                const size_t count = (bytes > 0)? bytes / sizeof(events[0]) : 0;
+                for(size_t e = 0; e < count; e++){
+                    for(size_t i = 0; i < irqLines_.size(); i++){
+                        if(irqLines_[i] == events[e].offset){
+                            pending |= 1ull << i;
+                        }
+                    }
+                }
+            }
         }
 
-        scanAll();
+        const int64_t now = nowMs();
+        if(now - lastFullScan >= kInterruptFallbackMs){
+            // settles debounced buttons, catches anything an edge missed
+            scanAll();
+            lastFullScan = now;
+        }else{
+            for(size_t c = 0; c < chips_.size(); c++){
+                const int irq = chips_[c].irqIndex;
+                if(irq >= 0 && (pending >> irq) & 1){
+                    scanChip(c, now);
+                }
+            }
+        }
         flushLeds();
 
-        // INT lines are wired-OR: a chip that changed again while another
-        // was being read keeps the line low without a new falling edge, so
-        // as long as it is low, read again instead of waiting for one.
-        rescan = (interruptFd_ >= 0) && interruptAsserted();
+        // A shared line is wired-OR: a chip that changed again while
+        // another was being read keeps it low without a new falling edge,
+        // so as long as a line is low, serve it again instead of waiting.
+        pending = assertedLines();
+        if(pending != 0){
+            // normally a line that stays low is served at once; the pause
+            // only keeps a stuck one (chip unplugged) from eating a core
+            std::this_thread::sleep_for(std::chrono::microseconds(200));
+        }
     }
 }
 

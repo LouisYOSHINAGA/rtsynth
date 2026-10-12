@@ -6,6 +6,7 @@
 #include <cmath>
 #include <atomic>
 #include <cstdio>
+#include <memory>
 #include <sstream>
 #include <string>
 #include <thread>
@@ -17,9 +18,10 @@
 #include "../src/core/SpscRingBuffer.hpp"
 #include "../src/dsp/SmoothedValue.hpp"
 #include "../src/host/ControlLoop.hpp"
-#include "../src/host/EgEditPanel.hpp"
 #include "../src/host/Mcp23017Panel.hpp"
 #include "../src/host/PanelConfig.hpp"
+#include "../src/host/PanelLogic.hpp"
+#include "../src/host/PdPanel.hpp"
 #include "../src/host/QuadratureDecoder.hpp"
 #include "../src/host/ShiftRegisterLeds.hpp"
 #include "../src/host/LcdParameterDisplay.hpp"
@@ -641,8 +643,8 @@ int main(){
     {
         PdSynthProcessor pd;
         PresetBank* bank = pd.presets();
-        expect(bank->count() == pd_presets::kFactoryCount + pd_presets::kUserCount,
-               "pd: the bank is the factory group followed by the user group");
+        expect(bank->count() == pd_presets::kFactoryCount + PdSynthProcessor::kUserSlots,
+               "pd: the bank is the factory group followed by 16 user slots");
 
         // the user group must be the tail of the bank, so that adding a
         // factory sound never renumbers a user slot
@@ -658,10 +660,14 @@ int main(){
         // what says the .vstpreset conversion reaches the parameters at
         // all. A preset saved before a parameter existed stops short of it,
         // and the rest must come from the defaults.
+        // (the padding slots past the user presets are the init patch:
+        // their "source" is no values at all, i.e. every one defaulted)
+        const pd_presets::Preset padding{"", nullptr, 0};
         for(int slot = 0; slot < bank->count(); slot++){
             const pd_presets::Preset& source =
                 (slot < firstUser)? pd_presets::kFactory[slot]
-                                  : pd_presets::kUser[slot - firstUser];
+                : (slot - firstUser < pd_presets::kUserCount)? pd_presets::kUser[slot - firstUser]
+                : padding;
             bank->select(slot);
             bool stored = true;
             bool defaulted = true;
@@ -891,7 +897,7 @@ int main(){
             "# test panel\n"
             "bus /dev/i2c-3\n"
             "expander 0x20\n"
-            "expander 0x21   # second\n"
+            "expander 0x21 int 17  # second\n"
             "interrupt 4\n"
             "encoder-step 0.02\n"
             "encoder row1.1 0.A0 0.A1\n"
@@ -901,8 +907,10 @@ int main(){
         std::string error;
         const bool ok = parsePanelConfig(text, config, error);
         expect(ok && config.options.busPath == "/dev/i2c-3"
-               && config.expanders.size() == 2 && config.expanders[1] == 0x21
+               && config.expanders.size() == 2 && config.expanders[1].address == 0x21
                && config.options.interruptLine == 4
+               && config.expanders[0].interruptLine == -1
+               && config.expanders[1].interruptLine == 17
                && std::abs(config.encoderStep - 0.02f) < 1e-6f,
                "panel config: settings are read");
         expect(ok && config.encoders.size() == 1 && config.encoders[0].role == "row1.1"
@@ -920,206 +928,391 @@ int main(){
                "panel config: a bad pin is reported with its line");
     }
 
-    // EG edit panel: per-row selection, sustain/end buttons, LEDs
+    // panel framework: generic roles, abs target, discrete stepping, blink
     {
-        // the pd parameter names, built by hand so this runs without pd
         ParameterSet params;
-        for(int line = 1; line <= 2; line++){
-            for(const char* eg : {"dco", "dcw", "dca"}){
-                const std::string prefix =
-                    "line" + std::to_string(line) + "_" + eg + "_";
-                for(int k = 1; k <= 8; k++) params.add(prefix + "rate" + std::to_string(k), "", 0, 1, 0.5f);
-                for(int k = 1; k <= 7; k++) params.add(prefix + "level" + std::to_string(k), "", 0, 1, 0.5f);
-                params.add(prefix + "sustain", "", 0, 1, 0.0f);   // Off
-                params.add(prefix + "end", "", 0, 1, 0.0f);       // step 2
-            }
-        }
-        params.add("line_select", "", 0, 1, 0.0f);               // Line 1
+        Parameter* level = params.add("level", "", 0, 1, 0.5f);       // continuous
+        Parameter* mode = params.add("mode", "", 0, 1, 0.0f);         // 4 options
+        mode->setSteps(4);
 
         struct FakeEncoders : RelativeControlInput {
-            int pending[16] = {};
+            int pending[4] = {};
             const char* name() const override { return "fake"; }
-            int numChannels() const override { return 16; }
+            int numChannels() const override { return 4; }
             int readDelta(int ch) override { const int d = pending[ch]; pending[ch] = 0; return d; }
         } encoders;
         struct FakeLeds : LedOutput {
-            bool on[64] = {};
-            int numChannels() const override { return 64; }
+            bool on[8] = {};
+            int flushes = 0;
+            int numChannels() const override { return 8; }
+            void setLed(int ch, bool value) override { on[ch] = value; }
+            void flush() override { flushes++; }
+        } leds;
+        struct Blinker : PanelLogic::Module {
+            PanelLogic::LedFn led(const std::string& role) override {
+                if(role != "blinky") return {};
+                return []{ return LedState::Blink; };
+            }
+            std::string unavailable() const override { return "blinker is a test"; }
+        };
+
+        PanelLogic logic(params);
+        logic.addModule(std::make_unique<Blinker>());
+        logic.setStepSize(0.01f);
+        expect(logic.attachEncoder("param:level", &encoders, 0)
+               && logic.attachEncoder("param:mode", &encoders, 1)
+               && logic.attachEncoder("abs", &encoders, 2)
+               && !logic.attachEncoder("param:nope", &encoders, 3)
+               && !logic.attachEncoder("bogus", &encoders, 3),
+               "panel logic: encoder roles resolve (and unknown ones do not)");
+        auto up = logic.button("abs.up");
+        auto down = logic.button("abs.down");
+        auto cycle = logic.button("param:mode");
+        expect(up && down && cycle && !logic.button("bogus"), "panel logic: button roles resolve");
+        expect(logic.attachLed("param:mode=2", &leds, 0) && logic.attachLed("blinky", &leds, 1)
+               && !logic.attachLed("param:mode=x", &leds, 2),
+               "panel logic: LED roles resolve");
+        expect(logic.warnings().size() == 1 && logic.warnings()[0] == "blinker is a test",
+               "panel logic: a module that cannot work is reported once");
+
+        encoders.pending[0] = +3;
+        logic.poll();
+        expect(std::abs(level->getNormalized() - 0.53f) < 1e-5f && logic.target() == level,
+               "panel logic: a continuous parameter moves by the step size");
+        up(true); up(false);
+        expect(std::abs(level->getNormalized() - 0.54f) < 1e-5f,
+               "panel logic: abs.up nudges what was touched last");
+        encoders.pending[1] = +2;
+        logic.poll();
+        expect(mode->option() == 2 && logic.target() == mode && leds.on[0],
+               "panel logic: a discrete parameter moves one option per detent");
+        down(true);
+        logic.poll();
+        expect(mode->option() == 1 && !leds.on[0], "panel logic: abs.down steps the option back");
+        encoders.pending[2] = +5;   // abs encoder, clamped at the last option
+        logic.poll();
+        expect(mode->option() == 3, "panel logic: the abs encoder clamps at the last option");
+        cycle(true);
+        expect(mode->option() == 0, "panel logic: a param button wraps to the first option");
+
+        // blink: on for kBlinkTicks polls, then off
+        bool sawOn = false, sawOff = false;
+        const int flushesBefore = leds.flushes;
+        for(int i = 0; i < 2 * PanelLogic::kBlinkTicks; i++){
+            logic.poll();
+            (leds.on[1]? sawOn : sawOff) = true;
+        }
+        expect(sawOn && sawOff, "panel logic: a blinking LED blinks");
+        expect(leds.flushes - flushesBefore <= 2, "panel logic: outputs are flushed only on change");
+    }
+
+    // presets: compare (A/B) and the edited flag
+    {
+        ParameterSet params;
+        Parameter* a = params.add("a", "", 0, 1, 0.2f);
+        Parameter* bend = params.add("bend", "", 0, 1, 0.5f);
+        bend->setTransient(true);
+        PresetBank bank(params);
+        bank.add("one");
+        a->set(0.7f);
+        bank.add("two");
+        bank.loadCurrent();
+        expect(!bank.isEdited(), "compare: a freshly loaded tone is not edited");
+        bend->set(0.9f);
+        expect(!bank.isEdited(), "compare: a transient parameter is not an edit");
+        a->set(0.4f);
+        expect(bank.isEdited(), "compare: an edit is noticed");
+        bank.toggleCompare();
+        expect(bank.comparing() && a->get() == 0.2f && !bank.isEdited(),
+               "compare: on plays the original");
+        bank.toggleCompare();
+        expect(!bank.comparing() && a->get() == 0.4f, "compare: off brings the edit back");
+        bank.toggleCompare();
+        bank.select(1);
+        bank.select(0);
+        expect(!bank.comparing() && a->get() == 0.4f,
+               "compare: switching tones while comparing keeps the edit");
+        bank.toggleCompare();
+        bank.revertCurrent();
+        expect(!bank.comparing() && a->get() == 0.2f && !bank.isEdited(),
+               "compare: initialize ends the comparison and drops the edit");
+    }
+
+#ifdef RTSYNTH_HAVE_PD
+    // the pd panel modules, against the real instrument
+    {
+        PdSynthProcessor pd;
+        ParameterSet& params = pd.parameters();
+        PresetBank* bank = pd.presets();
+
+        struct FakeEncoders : RelativeControlInput {
+            int pending[32] = {};
+            const char* name() const override { return "fake"; }
+            int numChannels() const override { return 32; }
+            int readDelta(int ch) override { const int d = pending[ch]; pending[ch] = 0; return d; }
+        } enc;
+        struct FakeLeds : LedOutput {
+            bool on[128] = {};
+            int numChannels() const override { return 128; }
             void setLed(int ch, bool value) override { on[ch] = value; }
         } leds;
 
-        EgEditPanel panel;
-        std::string error;
-        expect(panel.bind(params, error), "EG panel: binds to pd-style parameter ids");
-        panel.setStepSize(0.01f);
+        std::vector<int> programs;
+        int compares = 0, initializes = 0;
+        PdToneSelect::Host host;
+        host.programChange = [&](int program){ programs.push_back(program); };
+        host.toggleCompare = [&]{ compares++; };
+        host.initialize = [&]{ initializes++; };
+
+        PanelLogic logic(params);
+        logic.addModule(std::make_unique<PdLineEditor>(logic, params));
+        logic.addModule(std::make_unique<PdLineSelect>(logic, params));
+        logic.addModule(std::make_unique<PdToneSelect>(bank, host));
+        logic.addModule(std::make_unique<PdDetuneVibrato>(logic, params));
+
+        // encoders 0-7 = row 1, 8-15 = row 2, 16-18 = dv.1-3, 19 = abs
         for(int row = 1; row <= 2; row++){
-            for(int step = 1; step <= 8; step++){
-                panel.attachEncoder(row, step, &encoders, (row - 1) * 8 + step - 1);
+            for(int k = 1; k <= 8; k++){
+                logic.attachEncoder("row" + std::to_string(row) + "." + std::to_string(k),
+                                    &enc, (row - 1) * 8 + k - 1);
             }
         }
-        // LEDs for row 1: 0 dco 1 dcw 2 dca 3 rate 4 level,
-        // 10+K sus K (1..7), 20+K end K (2..8); row 2 dco = 5; line.K = 40+K
-        const char* modeLeds[] = {"dco", "dcw", "dca", "rate", "level"};
-        for(int i = 0; i < 5; i++) panel.attachLed(std::string("row1.") + modeLeds[i], &leds, i);
-        panel.attachLed("row2.dco", &leds, 5);
-        for(int k = 1; k <= 7; k++) panel.attachLed("row1.sus" + std::to_string(k), &leds, 10 + k);
-        for(int k = 2; k <= 8; k++) panel.attachLed("row1.end" + std::to_string(k), &leds, 20 + k);
-        for(int k = 1; k <= 4; k++) panel.attachLed("line." + std::to_string(k), &leds, 40 + k);
-        expect(!panel.attachLed("row1.bogus", &leds, 60) && !panel.attachLed("row3.dco", &leds, 60)
-               && !panel.attachLed("line.5", &leds, 60),
-               "EG panel: unknown LED roles are refused");
-        expect(panel.buttonId("row1.eg") >= 0 && panel.buttonId("row2.sus") >= 0
-               && panel.buttonId("line") >= 0 && panel.buttonId("eg") < 0
-               && panel.buttonId("row3.eg") < 0 && panel.buttonId("preset-next") < 0,
-               "EG panel: button roles are per row (plus the global line)");
+        for(int i = 1; i <= 3; i++) logic.attachEncoder("dv." + std::to_string(i), &enc, 15 + i);
+        logic.attachEncoder("abs", &enc, 19);
+        auto press = [&](const std::string& role){
+            auto fn = logic.button(role);
+            expect(static_cast<bool>(fn), ("pd panel: button role " + role).c_str());
+            if(fn){ fn(true); fn(false); }
+        };
+        // LEDs: 0-2 row1 dco/dcw/dca, 3-4 rate/level, 10+K row1 stepK,
+        // 20+b wave1 bit b, 30+b wave2 bit b, 40-43 line.1/2/1'/2',
+        // 50 preset 51 user 52 page 53 compare, 60+N toneN, 70 detune 71 vib
+        const char* row1[] = {"dco", "dcw", "dca", "rate", "level"};
+        for(int i = 0; i < 5; i++) logic.attachLed(std::string("row1.") + row1[i], &leds, i);
+        for(int k = 1; k <= 8; k++) logic.attachLed("row1.step" + std::to_string(k), &leds, 10 + k);
+        for(int b = 0; b < 3; b++){
+            logic.attachLed("row1.wave1.bit" + std::to_string(b), &leds, 20 + b);
+            logic.attachLed("row1.wave2.bit" + std::to_string(b), &leds, 30 + b);
+        }
+        const char* lines[] = {"line.1", "line.2", "line.1'", "line.2'"};
+        for(int i = 0; i < 4; i++) logic.attachLed(lines[i], &leds, 40 + i);
+        const char* tone[] = {"preset", "user", "page", "compare"};
+        for(int i = 0; i < 4; i++) logic.attachLed(tone[i], &leds, 50 + i);
+        for(int n = 1; n <= 8; n++) logic.attachLed("tone" + std::to_string(n), &leds, 60 + n);
+        logic.attachLed("detune", &leds, 70);
+        logic.attachLed("vib", &leds, 71);
+        expect(!logic.attachLed("row1.sus1", &leds, 99) && !logic.attachLed("row3.dco", &leds, 99)
+               && !logic.attachLed("tone9", &leds, 99),
+               "pd panel: unknown LED roles are refused");
+        logic.poll();
 
-        encoders.pending[2] = +5;   // row 1, step 3: line1_dco_rate3
-        panel.poll();
-        expect(std::abs(params.byId("line1_dco_rate3")->getNormalized() - 0.55f) < 1e-4f,
-               "EG panel: default page edits DCO rate");
-        expect(leds.on[0] && !leds.on[1] && leds.on[3] && !leds.on[4] && leds.on[5],
-               "EG panel: LEDs show DCO / rate");
+        // --- line editor ----------------------------------------------------
+        Parameter* rate3 = params.byId("line1_dco_rate3");
+        const float rateBefore = rate3->getNormalized();
+        enc.pending[2] = +5;
+        logic.poll();
+        expect(std::abs(rate3->getNormalized() - std::min(1.0f, rateBefore + 0.05f)) < 1e-4f
+               && leds.on[0] && leds.on[3],
+               "pd panel: row 1 starts on DCO rate");
+        press("row1.eg");
+        press("row1.field");
+        Parameter* l1Level2 = params.byId("line1_dcw_level2");
+        Parameter* l2Rate2 = params.byId("line2_dco_rate2");
+        l1Level2->setNormalized(0.5f);
+        l2Rate2->setNormalized(0.5f);
+        enc.pending[1] = -10;
+        enc.pending[9] = +10;
+        logic.poll();
+        expect(std::abs(l1Level2->getNormalized() - 0.40f) < 1e-4f
+               && std::abs(l2Rate2->getNormalized() - 0.60f) < 1e-4f,
+               "pd panel: each row keeps its own DCx and rate/level");
+        expect(!leds.on[0] && leds.on[1] && leds.on[4] && !leds.on[3],
+               "pd panel: the row's LEDs follow its selection");
+        press("row1.eg"); press("row1.eg");
+        expect(logic.target() == l2Rate2, "pd panel: selection buttons leave the target alone");
 
-        // row 1: eg button DCO -> DCW, field button -> level; row 2 untouched
-        panel.onButton(panel.buttonId("row1.eg"), true);
-        panel.onButton(panel.buttonId("row1.eg"), false);
-        panel.onButton(panel.buttonId("row1.field"), true);
-        encoders.pending[1] = -10;      // row 1, step 2: line1_dcw_level2
-        encoders.pending[8 + 1] = +10;  // row 2, step 2: line2_dco_rate2
-        panel.poll();
-        expect(std::abs(params.byId("line1_dcw_level2")->getNormalized() - 0.40f) < 1e-4f
-               && std::abs(params.byId("line2_dco_rate2")->getNormalized() - 0.60f) < 1e-4f,
-               "EG panel: each row keeps its own EG and field");
-        expect(!leds.on[0] && leds.on[1] && leds.on[4] && !leds.on[3] && leds.on[5],
-               "EG panel: LEDs follow each row's selection");
-        panel.onButton(panel.buttonId("row1.eg"), true);
-        panel.onButton(panel.buttonId("row1.eg"), true);
-        expect(panel.selectedEgName(0) == "dco", "EG panel: eg button wraps DCA -> DCO");
-        panel.onButton(panel.buttonId("row1.dcw"), true);
-        expect(panel.selectedEgName(0) == "dcw", "EG panel: direct EG buttons work too");
+        // sustain / end on the shared step LEDs (row 1 is on DCO now)
+        Parameter* sus = params.byId("line1_dco_sustain");
+        Parameter* end = params.byId("line1_dco_end");
+        sus->setOption(0);   // Off
+        end->setOption(3);   // step 5
+        logic.poll();
+        bool onlyEnd = leds.on[15];
+        for(int k = 1; k <= 8; k++) if(k != 5) onlyEnd = onlyEnd && !leds.on[10 + k];
+        expect(onlyEnd, "pd panel: sustain Off lights only the end step");
+        press("row1.sus"); press("row1.sus"); press("row1.sus");
+        press("row1.end");
+        logic.poll();
+        expect(sus->option() == 3 && end->option() == 4 && leds.on[13] && leds.on[16]
+               && !leds.on[15],
+               "pd panel: sus / end step on, both points lit");
+        for(int i = 0; i < 5; i++) press("row1.sus");
+        expect(sus->option() == 0, "pd panel: sustain wraps 7 -> Off");
+        press("abs.down");
+        expect(sus->option() == 0, "pd panel: abs.down after sus stays at Off (no wrap)");
+        press("row1.sus");
+        press("abs.up");
+        expect(sus->option() == 2, "pd panel: abs steps what sus last changed");
 
-        encoders.pending[7] = +1;       // row 1, step 8: level 8 does not exist
-        panel.poll();                   // must simply do nothing
+        // waveforms in binary on three LEDs
+        Parameter* wave1 = params.byId("line1_wave1");
+        Parameter* wave2 = params.byId("line1_wave2");
+        wave1->setOption(5);   // waveform 6 = 110
+        wave2->setOption(0);   // Off
+        logic.poll();
+        expect(!leds.on[20] && leds.on[21] && leds.on[22]
+               && !leds.on[30] && !leds.on[31] && !leds.on[32],
+               "pd panel: waveform 6 shows 110, Off shows nothing");
+        press("row1.wave2"); press("row1.wave2"); press("row1.wave2");
+        logic.poll();
+        expect(wave2->option() == 3 && leds.on[30] && leds.on[31] && !leds.on[32],
+               "pd panel: wave2 steps to waveform 3 (011)");
+        press("row1.wave1"); press("row1.wave1");
+        bool blinkOn = false, blinkOff = false;
+        for(int i = 0; i < 2 * PanelLogic::kBlinkTicks; i++){
+            logic.poll();
+            if(leds.on[20] && leds.on[21] && leds.on[22]) blinkOn = true;
+            if(!leds.on[20] && !leds.on[21] && !leds.on[22]) blinkOff = true;
+        }
+        expect(wave1->option() == 7 && blinkOn && blinkOff,
+               "pd panel: waveform 8 does not fit three LEDs, so they blink");
+        press("row1.wave1");
+        expect(wave1->option() == 0, "pd panel: wave1 wraps 8 -> 1");
 
-        // sus: each press steps Off -> 1 -> ... -> 7 -> Off; LED = the step
-        const int sus = panel.buttonId("row1.sus");
-        panel.onButton(sus, true); panel.onButton(sus, false);
-        panel.onButton(sus, true); panel.onButton(sus, false);
-        panel.poll();
-        expect(panel.sustainStep(0) == 2 && leds.on[12] && !leds.on[11],
-               "EG panel: the sus button steps the sustain point");
-        for(int i = 0; i < 5; i++){ panel.onButton(sus, true); panel.onButton(sus, false); }
-        panel.poll();
-        expect(panel.sustainStep(0) == 7 && leds.on[17] && !leds.on[12],
-               "EG panel: sus reaches step 7");
-        panel.onButton(sus, true);
-        panel.poll();
-        bool anySus = false;
-        for(int k = 1; k <= 7; k++) anySus |= leds.on[10 + k];
-        expect(panel.sustainStep(0) == 0 && !anySus,
-               "EG panel: after step 7 sustain is Off and every sus LED is dark");
-        expect(!panel.attachLed("row1.sus8", &leds, 60) && !panel.attachLed("row1.end1", &leds, 60),
-               "EG panel: there is no sus8 / end1 LED");
+        // key follow: the DCx's (DCW for DCO), then swap; abs sets the value
+        Parameter* kfDcw = params.byId("line1_dcw_key_follow");
+        Parameter* kfDca = params.byId("line1_dca_key_follow");
+        kfDcw->setOption(0);
+        kfDca->setOption(0);
+        const uint32_t shown = kfDcw->changeCount();
+        press("row1.keyfollow");
+        expect(logic.target() == kfDcw && kfDcw->changeCount() != shown && kfDcw->option() == 0,
+               "pd panel: key follow select shows DCW key follow without changing it");
+        press("row1.keyfollow");
+        enc.pending[19] = +3;
+        logic.poll();
+        expect(logic.target() == kfDca && kfDca->option() == 3,
+               "pd panel: pressing again swaps to DCA; the abs encoder sets 0..9");
+        press("row1.dca");
+        press("row2.keyfollow");
+        expect(logic.target() == params.byId("line2_dcw_key_follow"),
+               "pd panel: each row has its own key follow");
 
-        // encoders keep editing while the sus/end buttons are in use
-        panel.onButton(sus, true);
-        encoders.pending[4] = +1;
-        panel.poll();
-        panel.onButton(sus, false);
-        expect(std::abs(params.byId("line1_dcw_level5")->getNormalized() - 0.51f) < 1e-4f
-               && panel.sustainStep(0) == 1,
-               "EG panel: encoders are not tied to the sus button");
+        // line select LEDs
+        Parameter* lineSelect = params.byId("line_select");
+        lineSelect->setOption(1);
+        press("line");
+        logic.poll();
+        expect(lineSelect->option() == 2 && leds.on[40] && !leds.on[41] && leds.on[42] && !leds.on[43],
+               "pd panel: 1+1' lights 1 and 1'");
+        press("line");
+        logic.poll();
+        expect(leds.on[40] && !leds.on[42] && leds.on[43], "pd panel: 1+2' lights 1 and 2'");
 
-        // end: 2 -> 3 ... -> 8 -> 2
-        const int end = panel.buttonId("row1.end");
-        for(int i = 0; i < 4; i++) panel.onButton(end, true);
-        panel.poll();
-        expect(panel.endStep(0) == 6 && leds.on[26] && !leds.on[22],
-               "EG panel: the end button steps the end point");
-        for(int i = 0; i < 3; i++) panel.onButton(end, true);
-        panel.poll();
-        expect(panel.endStep(0) == 2 && leds.on[22] && !leds.on[26],
-               "EG panel: end wraps 8 -> 2");
-        expect(panel.endStep(1) == 2 && panel.sustainStep(1) == 0,
-               "EG panel: row 1's points leave row 2 alone");
+        // --- tone select ----------------------------------------------------
+        bank->select(2);   // preset 3
+        logic.poll();
+        expect(leds.on[50] && !leds.on[51] && !leds.on[52] && leds.on[63],
+               "pd panel: preset 3 lights PRESET and tone 3");
+        press("tone5");
+        press("user");
+        press("page");
+        press("tone4");
+        const int userBase = bank->count() - 16;
+        expect(programs.size() == 2 && programs[0] == 4 && programs[1] == userBase + 11,
+               "pd panel: tone buttons send preset 5, then user 12");
+        bool toneBlinks = false;
+        for(int i = 0; i < 2 * PanelLogic::kBlinkTicks; i++){
+            logic.poll();
+            toneBlinks |= !leds.on[63];
+        }
+        expect(leds.on[51] && leds.on[52] && toneBlinks,
+               "pd panel: with another bank/page addressed the current tone blinks");
+        bank->select(userBase + 11);
+        logic.poll();
+        expect(leds.on[51] && leds.on[52] && leds.on[64] && !leds.on[63],
+               "pd panel: user 12 lights USER, PAGE and tone 4");
+        bank->select(1);   // e.g. a MIDI Program Change
+        logic.poll();
+        expect(leds.on[50] && !leds.on[52] && leds.on[62],
+               "pd panel: the selection follows a tone changed elsewhere");
 
-        // switching the row's EG shows that EG's points (DCA: end 2)
-        for(int i = 0; i < 2; i++) panel.onButton(end, true);   // DCW end 4
-        panel.poll();
-        panel.onButton(panel.buttonId("row1.dca"), true);
-        panel.poll();
-        expect(leds.on[2] && leds.on[22] && !leds.on[24],
-               "EG panel: sus/end LEDs show the selected EG's points");
+        // compare / initialize
+        press("compare");
+        expect(compares == 0, "pd panel: compare does nothing on an unedited tone");
+        params.byId("line1_dca_rate1")->setNormalized(0.123f);
+        logic.poll();
+        expect(leds.on[53], "pd panel: an edit lights COMPARE");
+        press("compare");
+        expect(compares == 1, "pd panel: compare is sent while edited");
+        bank->toggleCompare();   // what the audio thread does with it
+        bool compareBlinks = false;
+        for(int i = 0; i < 2 * PanelLogic::kBlinkTicks; i++){
+            logic.poll();
+            compareBlinks |= !leds.on[53];
+        }
+        expect(compareBlinks, "pd panel: COMPARE blinks while the original plays");
+        press("compare");
+        press("initialize");
+        expect(compares == 2 && initializes == 1, "pd panel: compare back, then initialize");
+        bank->toggleCompare();
 
-        // line select cycles through the four options
-        expect(leds.on[41] && !leds.on[42], "EG panel: line LED shows Line 1");
-        const int line = panel.buttonId("line");
-        for(int i = 0; i < 3; i++) panel.onButton(line, true);
-        panel.poll();
-        expect(panel.lineSelectOption() == 4 && leds.on[44] && !leds.on[41],
-               "EG panel: line button steps to 1+2'");
-        panel.onButton(line, true);
-        expect(panel.lineSelectOption() == 1, "EG panel: line button wraps to Line 1");
-
-#ifdef RTSYNTH_HAVE_PD
-        // against the real instrument: the encodings must mean what pd
-        // itself displays
-        PdSynthProcessor pd;
-        EgEditPanel pdPanel;
-        std::string pdError;
-        expect(pdPanel.bind(pd.parameters(), pdError), "EG panel: binds to the pd synth");
-        pdPanel.onButton(pdPanel.buttonId("row1.dcw"), true);
-        pd.parameters().byId("line1_dcw_sustain")->setNormalized(0.0f);  // Off
-        pd.parameters().byId("line1_dcw_end")->setNormalized(0.0f);      // step 2
-        for(int i = 0; i < 3; i++) pdPanel.onButton(pdPanel.buttonId("row1.sus"), true);
-        for(int i = 0; i < 4; i++) pdPanel.onButton(pdPanel.buttonId("row1.end"), true);
-        pd.parameters().byId("line_select")->setNormalized(0.0f);  // Line 1
-        pdPanel.onButton(pdPanel.buttonId("line"), true);
-        pdPanel.onButton(pdPanel.buttonId("line"), true);
-        const Parameter* susParam = pd.parameters().byId("line1_dcw_sustain");
-        const Parameter* endParam = pd.parameters().byId("line1_dcw_end");
-        const Parameter* lineParam = pd.parameters().byId("line_select");
-        expect(pd.describeValue(*susParam) == "Step 3" && pd.describeValue(*endParam) == "Step 6"
-               && pd.describeValue(*lineParam) == "1+1'",
-               "EG panel: sustain/end/line select decode as pd shows them");
-#endif
-
-        SineSynthProcessor sine;
-        EgEditPanel unbound;
-        std::string missing;
-        expect(!unbound.bind(sine.parameters(), missing) && !missing.empty(),
-               "EG panel: binding to a synth without EGs names the missing id");
+        // detune / vibrato
+        Parameter* oct = params.byId("detune_octave");
+        oct->setOption(3);   // 0 oct
+        enc.pending[16] = +1;
+        logic.poll();
+        expect(oct->option() == 4 && leds.on[70] && !leds.on[71],
+               "pd panel: dv.1 steps the detune octave");
+        press("detune-vib");
+        enc.pending[16] = +1;
+        logic.poll();
+        expect(oct->option() == 4 && leds.on[71], "pd panel: in vib mode dv.1 leaves detune alone");
+        press("vib.on");
+        bool vibWarned = false;
+        for(const std::string& w : logic.warnings()) vibWarned |= w.rfind("vibrato:", 0) == 0;
+        expect(vibWarned && logic.warnings().size() == 1,
+               "pd panel: only the missing vibrato is reported");
     }
+#endif
 
     // the shipped panel config parses and every role in it is understood
     {
         PanelConfig config;
         std::string error;
-        bool ok = loadPanelConfig(RTSYNTH_SOURCE_DIR "/panels/pd_2line.conf", config, error);
+        bool ok = loadPanelConfig(RTSYNTH_SOURCE_DIR "/panels/pd_panel.conf", config, error);
         Mcp23017Panel hw;
-        EgEditPanel eg;
-        for(uint8_t address : config.expanders) ok = ok && hw.addExpander(address) >= 0;
+        SineSynthProcessor sine;   // roles resolve without pd; they just do nothing
+        PanelLogic logic(sine.parameters());
+        logic.addModule(std::make_unique<PdLineEditor>(logic, sine.parameters()));
+        logic.addModule(std::make_unique<PdLineSelect>(logic, sine.parameters()));
+        logic.addModule(std::make_unique<PdToneSelect>(nullptr, PdToneSelect::Host{}));
+        logic.addModule(std::make_unique<PdDetuneVibrato>(logic, sine.parameters()));
+        for(const auto& e : config.expanders) ok = ok && hw.addExpander(e.address, e.interruptLine) >= 0;
         for(const auto& e : config.encoders){
-            int row = 0, step = 0;
-            ok = ok && hw.addEncoder(e.a, e.b) >= 0
-                 && EgEditPanel::parseEncoderRole(e.role, row, step)
-                 && eg.attachEncoder(row, step, nullptr, 0);
+            const int channel = hw.addEncoder(e.a, e.b);
+            ok = ok && channel >= 0 && logic.attachEncoder(e.role, &hw.encoders(), channel);
+            if(!ok){ std::printf("       encoder line %d: %s\n", e.line, hw.lastError().c_str()); break; }
         }
-        for(const auto& b : config.buttons) ok = ok && hw.addButton(b.pin) >= 0 && eg.buttonId(b.role) >= 0;
+        for(const auto& b : config.buttons){
+            ok = ok && hw.addButton(b.pin) >= 0 && static_cast<bool>(logic.button(b.role));
+            if(!ok){ std::printf("       button line %d: %s\n", b.line, hw.lastError().c_str()); break; }
+        }
         ShiftRegisterLeds chain;
         chain.setChainLength(config.shiftChips);
         for(const auto& l : config.leds){
             const int channel = l.onShiftRegister? l.shiftChannel : hw.addLed(l.pin, l.activeLow);
             ok = ok && channel >= 0
-                 && eg.attachLed(l.role, l.onShiftRegister? static_cast<LedOutput*>(&chain)
-                                                          : &hw.leds(), channel);
+                 && logic.attachLed(l.role, l.onShiftRegister? static_cast<LedOutput*>(&chain)
+                                                             : &hw.leds(), channel);
+            if(!ok){ std::printf("       led line %d\n", l.line); break; }
         }
-        expect(ok && config.encoders.size() == 16 && config.buttons.size() == 9
-               && config.leds.size() == 42 && config.expanders.size() == 3
-               && config.shiftChips == 6,
-               "panels/pd_2line.conf: 16 encoders, 9 buttons, 42 LEDs, all valid");
-        if(!ok){
-            std::printf("       %s %s\n", error.c_str(), hw.lastError().c_str());
+        expect(ok && config.encoders.size() == 19 && config.buttons.size() == 33
+               && config.leds.size() == 61 && config.expanders.size() == 6
+               && config.shiftChips == 8,
+               "panels/pd_panel.conf: 19 encoders, 33 buttons, 61 LEDs, all valid");
+        if(!error.empty()){
+            std::printf("       %s\n", error.c_str());
         }
     }
 
