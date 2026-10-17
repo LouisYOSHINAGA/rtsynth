@@ -58,7 +58,8 @@ inline bool numbered(const std::string& text, const std::string& prefix, int& n)
 //                               level 8 in pd: idle on the level page)
 //   LEDs     rowR.dco/dcw/dca, rowR.rate/level   the selection
 //            rowR.step1..8   the sustain and the end step of the selected
-//                            DCx (2 lit, or 1 when sustain is Off)
+//                            DCx: 2 lit = lower is sustain, higher is end;
+//                            1 lit = end (sustain Off, or at/after the end)
 //            rowR.wave1.1..9 one LED per value, the current one lit:
 //            rowR.wave2.1..9 the waveform (1..8; wave2 Off = all dark), or
 //                            in key follow mode the DCW / DCA key follow
@@ -160,7 +161,9 @@ public:
         if(name == "rate")  return [row, on]{ return on(!row->level); };
         if(name == "level") return [row, on]{ return on(row->level); };
         if(pdpanel::numbered(name, "step", n) && n >= 1 && n <= kSteps){
-            return [row, n, on]{ return on(n == row->sustainStep() || n == row->endStep()); };
+            return [row, n, on]{
+                return on(n == row->endStep() || n == row->shownSustainStep());
+            };
         }
         for(int wave = 1; wave <= 2; wave++){
             const std::string prefix = "wave" + std::to_string(wave) + ".";
@@ -209,6 +212,14 @@ private:
         // pd: sustain option 0 = Off, k = step k; end option k = step k + 2
         int sustainStep() const { return selected().sustain? selected().sustain->option() : 0; }
         int endStep() const { return selected().end? selected().end->option() + 2 : 0; }
+        // The sustain point as the step LEDs show it. On the CZ a sustain
+        // point never lies beyond the end point, so the panel reads two lit
+        // LEDs as "lower = sustain, higher = end": a sustain at or after the
+        // end is shown as no sustain at all (one LED = the end point).
+        int shownSustainStep() const {
+            const int sustain = sustainStep();
+            return (sustain > 0 && sustain < endStep())? sustain : 0;
+        }
         // the number a player reads: wave1 1..8, wave2 0 (Off)..8
         // what the wave LEDs show: the waveform number, or in key follow
         // mode the DCW (wave1) / DCA (wave2) key follow

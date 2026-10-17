@@ -361,7 +361,7 @@ CZ-101 風のフロントパネル（スイッチ 29・エンコーダ 19・LED 
 | | `rowR.wave1` ＋ `rowR.wave2` **同時押し** | **key follow モード**の入/切。モード中は wave1 / wave2 で DCW / DCA の key follow を 0 → 1 → … → 9 → 0 と進める（LED は 1〜9、0 は全消灯） | `rowR.kf`（モード中点灯） |
 | | `rowR.field` | rate ↔ level | `rowR.rate/level` |
 | | エンコーダ `rowR.1`〜`8` | 選択中の EG の rate / level K（level 8 は pd に無いので無効） | — |
-| | `rowR.sus` / `rowR.end` | サステイン（Off, 1〜7）/ エンド（2〜8）を次へ | `rowR.step1`〜`8`（サステインとエンドの位置。最大 2 個、Off なら 1 個） |
+| | `rowR.sus` / `rowR.end` | サステイン（Off, 1〜7）/ エンド（2〜8）を次へ | `rowR.step1`〜`8`（2 個点灯 = 小さい方がサステイン・大きい方がエンド。1 個 = エンドで、サステインは Off かエンド以降で無効） |
 | 全体 | `line` | Line 1 → 2 → 1+1' → 1+2' | `line.1` `line.2` `line.1'` `line.2'`（鳴っているライン） |
 | detune/vib | `detune-vib` | 3 つのツマミを detune ↔ vibrato に切替 | `detune` / `vib` |
 | | エンコーダ `dv.1` `dv.2` `dv.3` | detune oct / note / fine、vib delay / depth / rate（1 クリック = 1 段） | — |

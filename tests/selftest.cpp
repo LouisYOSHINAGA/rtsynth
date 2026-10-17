@@ -1147,6 +1147,25 @@ int main(){
         expect(sus->option() == 3 && end->option() == 4 && leds.on[13] && leds.on[16]
                && !leds.on[15],
                "pd panel: sus / end step on, both points lit");
+        auto litSteps = [&]{
+            std::vector<int> lit;
+            for(int k = 1; k <= 8; k++) if(leds.on[10 + k]) lit.push_back(k);
+            return lit;
+        };
+        sus->setOption(6);   // step 6 = end (step 6): no sustain before the end
+        logic.poll();
+        expect(litSteps() == std::vector<int>{6},
+               "pd panel: a sustain at the end point shows only the end");
+        sus->setOption(7);   // step 7, after the end
+        logic.poll();
+        expect(litSteps() == std::vector<int>{6},
+               "pd panel: a sustain after the end point shows only the end");
+        sus->setOption(5);   // step 5, before the end
+        logic.poll();
+        expect(litSteps() == (std::vector<int>{5, 6}),
+               "pd panel: a sustain before the end lights both (lower = sustain)");
+        sus->setOption(3);
+        logic.poll();
         for(int i = 0; i < 5; i++) press("row1.sus");
         expect(sus->option() == 0, "pd panel: sustain wraps 7 -> Off");
         press("abs.down");
