@@ -175,6 +175,15 @@ public:
         target_ = p;
     }
 
+    // set a discrete parameter to `option` and make it the abs target
+    void setOption(Parameter* p, int option){
+        if(p == nullptr || p->steps() < 2){
+            return;
+        }
+        p->setOption(option);
+        target_ = p;
+    }
+
     void select(Parameter* p){
         if(p != nullptr){
             target_ = p;

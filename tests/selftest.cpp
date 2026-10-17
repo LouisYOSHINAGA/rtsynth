@@ -1166,10 +1166,26 @@ int main(){
                "pd panel: a sustain before the end lights both (lower = sustain)");
         sus->setOption(3);
         logic.poll();
-        for(int i = 0; i < 5; i++) press("row1.sus");
-        expect(sus->option() == 0, "pd panel: sustain wraps 7 -> Off");
+        // sus only offers the steps before the end (end = step 6 here)
+        for(int i = 0; i < 3; i++) press("row1.sus");   // 3 -> 4 -> 5 -> Off
+        expect(sus->option() == 0, "pd panel: sustain wraps end-1 -> Off");
+        sus->setOption(7);   // left after the end by a preset / CC: counts as Off
+        press("row1.sus");
+        expect(sus->option() == 1, "pd panel: a sustain after the end steps on from Off");
+        for(int i = 0; i < 3; i++) press("row1.sus");   // 2, 3, 4
+        expect(sus->option() == 4 && end->option() == 4,
+               "pd panel: sustain 4 before end 6");
+        press("row1.end");                                // end 7: still after the sustain
+        expect(end->option() == 5 && sus->option() == 4,
+               "pd panel: moving the end further keeps the sustain");
+        press("row1.end"); press("row1.end");             // end 8 -> wraps to 2
+        expect(end->option() == 0 && sus->option() == 0,
+               "pd panel: an end landing in front of the sustain turns it Off");
+        logic.poll();
+        expect(litSteps() == std::vector<int>{2}, "pd panel: then only the end LED is lit");
         press("abs.down");
-        expect(sus->option() == 0, "pd panel: abs.down after sus stays at Off (no wrap)");
+        expect(end->option() == 0, "pd panel: abs.down after end stays at its first step");
+        end->setOption(3);   // end step 5
         press("row1.sus");
         press("abs.up");
         expect(sus->option() == 2, "pd panel: abs steps what sus last changed");

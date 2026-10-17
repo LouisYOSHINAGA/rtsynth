@@ -45,8 +45,10 @@ inline bool numbered(const std::string& text, const std::string& prefix, int& n)
 //
 //   buttons  rowR.eg         DCx: DCO -> DCW -> DCA -> DCO   (rowR.dco/dcw/dca: direct)
 //            rowR.field      rate <-> level                  (rowR.rate/level: direct)
-//            rowR.sus        sustain point: Off, 1..7, Off, ...
-//            rowR.end        end point: 2..8, 2, ...
+//            rowR.sus        sustain point: Off, 1, ..., end - 1, Off, ...
+//                            (only the steps before the end point)
+//            rowR.end        end point: 2..8, 2, ...; moving it onto or in
+//                            front of the sustain point turns sustain Off
 //            rowR.wave1      first waveform: 1..8, 1, ...
 //            rowR.wave2      second waveform: Off, 1..8, Off, ...
 //            rowR.wave1 + rowR.wave2 pressed together: key follow mode
@@ -126,8 +128,8 @@ public:
         if(name == "field") return onPress([row]{ row->level = !row->level; });
         if(name == "rate")  return onPress([row]{ row->level = false; });
         if(name == "level") return onPress([row]{ row->level = true; });
-        if(name == "sus")   return onPress([this, row]{ panel_.step(row->selected().sustain); });
-        if(name == "end")   return onPress([this, row]{ panel_.step(row->selected().end); });
+        if(name == "sus")   return onPress([this, row]{ stepSustain(*row); });
+        if(name == "end")   return onPress([this, row]{ stepEnd(*row); });
         if(name == "wave1") return [this, row](bool pressed){ waveButton(*row, 0, pressed); };
         if(name == "wave2") return [this, row](bool pressed){ waveButton(*row, 1, pressed); };
         if(name == "keyfollow") return onPress([this, row]{ toggleKeyFollow(*row); });
@@ -245,6 +247,29 @@ private:
     }
 
     bool validRow(int r) const { return r >= 1 && r <= static_cast<int>(rows_.size()); }
+
+    // The CZ keeps a sustain point before the end point, so the panel only
+    // ever offers those: SUS cycles Off, 1 .. end - 1 (a sustain left at or
+    // after the end by a preset or a CC counts as Off, as pd plays it), and
+    // an END that lands on or in front of the sustain point drops it.
+    // pd option encodings: sustain option k = step k (0 = Off); end option
+    // k = step k + 2.
+    void stepSustain(Row& row){
+        Parameter* sustain = row.selected().sustain;
+        if(sustain == nullptr){
+            return;
+        }
+        const int next = row.shownSustainStep() + 1;
+        panel_.setOption(sustain, (next < row.endStep())? next : 0);
+    }
+
+    void stepEnd(Row& row){
+        EgParams& eg = row.selected();
+        panel_.step(eg.end);
+        if(eg.sustain != nullptr && row.sustainStep() >= row.endStep()){
+            eg.sustain->setOption(0);
+        }
+    }
 
     // wave1 (i = 0) / wave2 (i = 1): one alone steps on release, both
     // together toggle key follow mode and do nothing else
