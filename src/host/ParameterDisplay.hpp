@@ -12,7 +12,8 @@ namespace rtsynth {
 struct DisplayLine {
     std::string id;      // parameter id, e.g. "line1_dcw_rate1" (--param name)
     std::string label;   // short human name, e.g. "L1 DCW Rate 1"
-    std::string value;   // formatted value, e.g. "0.787 (531 ms)"
+    std::string value;   // formatted value, e.g. "0.787"
+    float normalized = 0.0f;  // the value as 0..1, for layouts that want a number
     std::string source;  // what caused it, e.g. "CC 46 = 100"; empty if not MIDI
 };
 

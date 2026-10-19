@@ -1,8 +1,10 @@
 #pragma once
 
 #include <string>
+#include <utility>
 #include <vector>
 
+#include "LcdLayout.hpp"
 #include "ParameterDisplay.hpp"
 #include "TextDisplay.hpp"
 
@@ -14,8 +16,11 @@ namespace rtsynth {
 //
 //   +----------------+
 //   |L1 DCW Rate 1   |   <- line.label (line.id when the synth has no name)
-//   |0.787 (531 ms)  |   <- line.value, as --verbose prints it
+//   |0.787           |   <- line.value, as --verbose prints it
 //   +----------------+
+//
+// That is the default; an LcdLayout (--lcd-layout <file>) rewrites both
+// rows per parameter, for presets and for the start/stop messages.
 //
 // Everything above the character cells is the monitor's job, so the LCD
 // shows exactly what the console shows and needs no knowledge of MIDI,
@@ -29,26 +34,31 @@ public:
     explicit LcdParameterDisplay(TextDisplay& display)
         : display_(display), drawn_(static_cast<size_t>(display.rows())){}
 
-    // Static two-line message (startup banner, shutdown note, ...).
-    void showStatus(const std::string& top, const std::string& bottom){
-        draw(0, top);
-        draw(1, bottom);
+    void setLayout(LcdLayout layout){ layout_ = std::move(layout); }
+
+    void showStartup(const std::string& synth, const std::string& preset){
+        show(layout_.renderStartup(synth, preset));
     }
 
+    void showStop(){ show(layout_.stop); }
+
     void showParameter(const DisplayLine& line) override {
-        draw(0, line.label.empty()? line.id : line.label);
-        draw(1, line.value);
+        show(layout_.renderParameter(line));
     }
 
     void showPreset(int index, const std::string& name) override {
-        draw(0, "PRESET " + std::to_string(index));
-        draw(1, name);
+        show(layout_.renderPreset(index, name));
     }
 
     // Rows actually pushed to the hardware, for the self-test.
     int writeCount() const { return writes_; }
 
 private:
+    void show(const LcdLayout::Rows& rows){
+        draw(0, rows.top);
+        draw(1, rows.bottom);
+    }
+
     // Sending a row costs ~2 ms of I2C, and a knob sweep redraws the value
     // row on every poll while the label above it stays put — so compare
     // against what the display already holds and write only the difference.
@@ -70,6 +80,7 @@ private:
     }
 
     TextDisplay& display_;
+    LcdLayout layout_;
     std::vector<std::string> drawn_;  // last text written to each row
     int writes_ = 0;
 };

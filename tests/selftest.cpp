@@ -24,6 +24,7 @@
 #include "../src/host/PdPanel.hpp"
 #include "../src/host/QuadratureDecoder.hpp"
 #include "../src/host/ShiftRegisterLeds.hpp"
+#include "../src/host/LcdLayout.hpp"
 #include "../src/host/LcdParameterDisplay.hpp"
 #include "../src/host/ParameterDisplay.hpp"
 #include "../src/host/ParameterMonitor.hpp"
@@ -1502,6 +1503,55 @@ int main(){
         lcd.showPreset(2, "E.Piano");
         expect(fakeLcd.lines[0] == "PRESET 2" && fakeLcd.lines[1] == "E.Piano",
                "lcd shows a preset switch on both rows");
+    }
+
+    // LCD layout file: templates, last matching rule wins, captures
+    {
+        std::istringstream text(
+            "# comment\n"
+            "param *_rate?   {name} | {99}\n"
+            "param line?_dcw_rate?  DCW{1} R{2} | {raw} {bogus}\n"
+            "preset  TONE {n} | \"  {preset}\"\n"
+            "stop    bye | \n");
+        LcdLayout layout;
+        std::string error;
+        expect(parseLcdLayout(text, layout, error), "lcd layout: a valid file parses");
+
+        DisplayLine line;
+        line.id = "line2_dcw_rate3";
+        line.label = "L2 DCW Rate 3";
+        line.value = "0.500";
+        line.normalized = 0.5f;
+        LcdLayout::Rows rows = layout.renderParameter(line);
+        expect(rows.top == "DCW2 R3" && rows.bottom == "0.500 {bogus}",
+               "lcd layout: the last matching rule wins, with its captures");
+
+        line.id = "line1_dco_rate1";
+        line.label = "L1 DCO Rate 1";
+        line.normalized = 1.0f;
+        rows = layout.renderParameter(line);
+        expect(rows.top == "L1 DCO Rate 1" && rows.bottom == "99",
+               "lcd layout: an earlier rule serves the ids the later one misses");
+
+        line.id = "volume";
+        line.label = "Volume";
+        line.value = "0.8";
+        rows = layout.renderParameter(line);
+        expect(rows.top == "Volume" && rows.bottom == "0.8",
+               "lcd layout: the built-in catch-all stays underneath");
+
+        rows = layout.renderPreset(3, "Bass");
+        expect(rows.top == "TONE 3" && rows.bottom == "  Bass" && layout.stop.top == "bye",
+               "lcd layout: preset/stop rows, quotes keep spaces");
+
+        std::istringstream bad("param line1_* no bar here\n");
+        LcdLayout other;
+        expect(!parseLcdLayout(bad, other, error) && error.rfind("line 1:", 0) == 0,
+               "lcd layout: a row without '|' is reported with its line");
+
+        LcdLayout shipped;
+        expect(loadLcdLayout(RTSYNTH_SOURCE_DIR "/lcd/pd_lcd.conf", shipped, error),
+               "lcd/pd_lcd.conf parses");
     }
 
     // regression: when voice stealing leaves TWO voices on the same note,

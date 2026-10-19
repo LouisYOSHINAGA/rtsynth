@@ -275,11 +275,13 @@ i2cdetect -y 1             # 表に 27 か 3f が出る。それが LCD のア�
 ```
 +----------------+
 |L1 DCW Rate 1   |
-|0.787 (1063 ms) |
+|0.787           |
 +----------------+
 ```
 
-値は生の 0〜1 ではなく、楽器が解釈した意味（波形名・ミリ秒・セント数など）で出ます。
+値は楽器が解釈した意味（波形名・ステップ・セント数など）で出ます。
+表示の文言は `lcd/pd_lcd.conf` を編集し、`--lcd-layout lcd/pd_lcd.conf` を付けて起動すると
+変えられます（例: EG のレートを 0〜99 で表示）。
 Program Change でプリセットを切り替えたときは `PRESET 6` / `Mono Bass` の 2 行になります。
 
 `-v param` を併用すると、同じ内容がコンソールにも流れるので突き合わせて確認できます
@@ -568,7 +570,7 @@ git pull && cmake --build build -j4      # 最新をビルド
 ```sh
 ./build/rtsynth --synth pd --lcd 0x27 --panel panels/pd_panel.conf -v panel,param
 #   [panel] encoder row1.3 (0.A4/0.A5) +1      ← どのツマミがどのピンで動いたか
-#   [param] L1 DCO Rate 3 = 0.510 (2450 ms)     ← それで何が変わったか
+#   [param] L1 DCO Rate 3 = 0.510     ← それで何が変わったか
 #   [panel] button row1.eg (3.A0) down
 ./build/rtsynth --synth pd --panel panels/pd_panel.conf --panel-led-test
 #   [panel] LED row1.step1 (sr0.0)              ← 今光っている LED の役割とピン（0.4 秒ずつ順番に）

@@ -93,6 +93,8 @@ void printUsage(const char* argv0){
         "  --lcd <addr>         show the last-changed parameter on a 16x2 I2C LCD\n"
         "                       at this address (e.g. --lcd 0x27; find with i2cdetect)\n"
         "  --lcd-bus <path>     I2C bus of the LCD (default: /dev/i2c-1)\n"
+        "  --lcd-layout <file>  what the LCD rows say, as editable text templates\n"
+        "                       (see lcd/pd_lcd.conf)\n"
         "  --voices <n>         cap polyphony (fewer voices = less CPU; the pd\n"
         "                       synth is expensive, try 8 or 6 if audio crackles)\n"
         "  -v, --verbose [what] trace what the synth is doing. With no argument\n"
@@ -269,6 +271,7 @@ struct CliOptions {
     bool panelLedTest = false;
     int lcdAddress = -1;               // -1 = no LCD
     std::string lcdBus = "/dev/i2c-1";
+    std::string lcdLayout;             // --lcd-layout file, "" = built-in text
     int maxVoices = 0;                 // 0 = instrument default
     int preset = -1;                   // -1 = the instrument's default slot
     bool listPresets = false;
@@ -378,6 +381,8 @@ bool parseArguments(int argc, char* argv[], CliOptions& cli, bool& exitRequested
                 }
             }else if(arg == "--lcd-bus"){
                 if(const char* v = nextArg()) cli.lcdBus = v;
+            }else if(arg == "--lcd-layout"){
+                if(const char* v = nextArg()) cli.lcdLayout = v;
             }else if(arg == "--voices"){
                 if(const char* v = nextArg()) cli.maxVoices = std::stoi(v);
             }else if(arg == "--preset"){
@@ -823,8 +828,18 @@ int main(int argc, char* argv[]){
         if(!lcd.open(cli.lcdBus, static_cast<uint8_t>(cli.lcdAddress))){
             return 1;
         }
-        lcdDisplay.showStatus(synth->name(), presets != nullptr && !presets->empty()?
-                                             presets->currentName() : "ready");
+        if(!cli.lcdLayout.empty()){
+            rtsynth::LcdLayout layout;
+            std::string error;
+            if(!rtsynth::loadLcdLayout(cli.lcdLayout, layout, error)){
+                std::cerr << "--lcd-layout: " << error << std::endl;
+                return 1;
+            }
+            lcdDisplay.setLayout(std::move(layout));
+            std::cout << "LCD layout: " << cli.lcdLayout << std::endl;
+        }
+        lcdDisplay.showStartup(synth->name(), presets != nullptr && !presets->empty()?
+                                              presets->currentName() : "ready");
         std::cout << "LCD: 16x2 on " << cli.lcdBus << " addr 0x"
                   << std::hex << cli.lcdAddress << std::dec << std::endl;
     }
@@ -987,7 +1002,7 @@ int main(int argc, char* argv[]){
 
     std::cout << "\nShutting down." << std::endl;
     if(cli.lcdAddress >= 0){
-        lcdDisplay.showStatus("rtsynth", "stopped");
+        lcdDisplay.showStop();
     }
     controlLoop.stop();
     shiftLeds.close();

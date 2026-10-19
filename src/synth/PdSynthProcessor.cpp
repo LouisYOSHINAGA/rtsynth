@@ -100,12 +100,6 @@ constexpr int egParam(int line, int egIndex, int sub){
 
 constexpr int kEgDco = 0, kEgDcw = 1, kEgDca = 2;
 
-// pd's EG rate is a *time*, not a slope: EG::rateToSample() spends
-// 5 * (1 - rate) seconds moving to the step's level whatever the distance.
-// Presets and the display are both easier to read in milliseconds.
-constexpr double rateForSeconds(double seconds){ return 1.0 - seconds / 5.0; }
-double secondsForRate(double rate){ return 5.0 * (1.0 - rate); }
-
 }  // namespace
 
 PdSynthProcessor::PdSynthProcessor(){
@@ -577,12 +571,7 @@ std::string PdSynthProcessor::describeValue(const Parameter& parameter) const {
     }
 
     const int sub = (offset - kLineParamEgBegin) % kLineParamEgBlockSize;
-    if(sub < kNumEgRateParams){
-        std::snprintf(text, sizeof(text), "%.3f (%.0f ms)", value,
-                      secondsForRate(value) * 1000.0);
-        return text;
-    }
-    if(sub < kEgParamSustainPoint){
+    if(sub < kEgParamSustainPoint){   // rates and levels
         std::snprintf(text, sizeof(text), "%.3f", value);
         return text;
     }

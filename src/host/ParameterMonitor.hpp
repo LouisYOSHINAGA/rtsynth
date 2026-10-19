@@ -115,6 +115,7 @@ private:
         line.id = parameter.id();
         line.label = parameter.name();
         line.value = processor_.describeValue(parameter);
+        line.normalized = parameter.getNormalized();
         if(line.value.empty()){
             char text[32];
             std::snprintf(text, sizeof(text), "%.4g",

@@ -468,10 +468,14 @@ R は 330Ω〜1kΩ 程度（3.3V・Vf 2.0V で 4mA〜1.3mA）。
 エンコーダでも、動かした側が表示されます。Program Change でプリセットを切り替えると
 `PRESET 6` / `Mono Bass` の 2 行になります。
 
+表示の文言は `--lcd-layout lcd/pd_lcd.conf` で指定するテキストファイルで変えられます
+（パラメータごとの上段・下段のテンプレート、プリセット・起動・終了時の表示。書式は
+ファイル冒頭のコメント参照）。指定しなければ下の標準表示です。
+
 ```
 +----------------+
 |L1 DCW Rate 1   |  <- DisplayLine.label（表示名。無ければ ID）
-|0.787 (1063 ms) |  <- DisplayLine.value（-v のコンソールと同じ整形）
+|0.787           |  <- DisplayLine.value（-v のコンソールと同じ整形）
 +----------------+
 ```
 
@@ -506,7 +510,7 @@ Program Change ┘                                            │               
 
 ```
 [midi]  cc       ch 0  cc 46  val 100  (nanoKONTROL2 MIDI 1)
-[param] L1 DCW Rate 1 = 0.787 (1063 ms)   <- CC 46 = 100   (line1_dcw_rate1)
+[param] L1 DCW Rate 1 = 0.787   <- CC 46 = 100   (line1_dcw_rate1)
 [param] L1 Wave 1st = Pulse               <- CC 89 = 40    (line1_wave1)
 [param] Detune Fine = +35 (+58.3 ct)      <- CC 87 = 100   (detune_fine)
 [preset] 6: Mono Bass
