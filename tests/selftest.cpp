@@ -1281,8 +1281,8 @@ int main(){
                "pd panel: page on preset 3 goes straight to preset 11");
         land();
         expect(leds.on[50] && leds.on[52] && leds.on[63], "pd panel: preset 11 = PRESET, PAGE, tone 3");
-        press("user");
-        expect(programs.back() == userBase + 10, "pd panel: user goes to user 11");
+        press("preset");
+        expect(programs.back() == userBase + 10, "pd panel: preset on preset 11 goes to user 11");
         press("page");   // before the switch lands: acts on the requested tone
         expect(programs.back() == userBase + 2,
                "pd panel: a second press before the switch lands builds on the first");
@@ -1297,7 +1297,9 @@ int main(){
         expect(programs.size() == sent, "pd panel: the current tone is not re-sent");
         press("preset");
         land();
-        expect(programs.back() == 4 && leds.on[50] && leds.on[65], "pd panel: preset goes to preset 5");
+        expect(programs.back() == 4 && leds.on[50] && leds.on[65],
+               "pd panel: preset on user 5 goes back to preset 5");
+        expect(!logic.button("user"), "pd panel: there is no user button (preset alternates)");
         bank->select(userBase + 9);   // e.g. a MIDI Program Change
         logic.poll();
         expect(leds.on[51] && leds.on[52] && leds.on[62],
@@ -1374,10 +1376,10 @@ int main(){
                                                              : &hw.leds(), channel);
             if(!ok){ std::printf("       led line %d\n", l.line); break; }
         }
-        expect(ok && config.encoders.size() == 19 && config.buttons.size() == 29
+        expect(ok && config.encoders.size() == 19 && config.buttons.size() == 28
                && config.leds.size() == 87 && config.expanders.size() == 5
                && config.shiftChips == 10,
-               "panels/pd_panel.conf: 19 encoders, 29 buttons, 87 LEDs, all valid");
+               "panels/pd_panel.conf: 19 encoders, 28 buttons, 87 LEDs, all valid");
         if(!error.empty()){
             std::printf("       %s\n", error.c_str());
         }

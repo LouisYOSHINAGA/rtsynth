@@ -358,15 +358,17 @@ private:
 // switches the tone at once, so the LEDs always describe the tone that
 // is sounding:
 //
-//   buttons  preset, user   the same number in the other bank
-//                           (preset 3 -> user 3)
+//   buttons  preset         the same number in the other bank, so each
+//                           press alternates: preset 3 -> user 3 ->
+//                           preset 3 ...
 //            page           the same button on the other page
 //                           (3 -> 11, 11 -> 3)
 //            tone1..tone8   that number on the current bank and page
 //            compare        A/B: the original tone <-> the edited one
 //                           (only while the tone is edited or compared)
 //            initialize     discard every edit to the current tone
-//   LEDs     preset, user, page, tone1..tone8   the current tone
+//   LEDs     preset, user   which bank the current tone is in
+//            page, tone1..tone8                 the current tone
 //            compare        lit while the tone is edited, blinking while
 //                           the original is being compared
 //
@@ -400,8 +402,7 @@ public:
         auto onPress = [](std::function<void()> fn) -> PanelLogic::ButtonFn {
             return [fn](bool pressed){ if(pressed) fn(); };
         };
-        if(role == "preset") return onPress([this]{ go([](Location& l){ l.user = false; }); });
-        if(role == "user")   return onPress([this]{ go([](Location& l){ l.user = true; }); });
+        if(role == "preset") return onPress([this]{ go([](Location& l){ l.user = !l.user; }); });
         if(role == "page")   return onPress([this]{ go([](Location& l){ l.page = !l.page; }); });
         if(role == "compare"){
             return onPress([this]{

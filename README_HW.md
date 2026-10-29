@@ -29,7 +29,7 @@ Raspberry Pi と rtsynth でハードシンセを組むための、部品購入�
 | タクトスイッチ（6mm 4本足が定番）×3〜4 | 1個 10〜30円 | プリセット切替・電源断 | Step 6 |
 | LED + 抵抗 330Ω〜1kΩ（任意） | 1個 10〜20円 | ボタンの押下表示 | Step 6 |
 | MCP23017-E/SP（DIP-28）×5 + 74HC595 ×10 | 1個 50〜250円 | フロントパネル | Step 7 |
-| ロータリーエンコーダ ×19 + DIP 化基板、タクトスイッチ ×29、LED ×87 | — | 同上 | Step 7 |
+| ロータリーエンコーダ ×19 + DIP 化基板、タクトスイッチ ×28、LED ×87 | — | 同上 | Step 7 |
 
 - 秋月電子・スイッチサイエンス・Amazon・AliExpress あたりで全部揃います
 - はんだ付けを避けたいなら「ピンヘッダはんだ済み」のモジュールを選ぶこと
@@ -439,13 +439,13 @@ CZ-101 風のフロントパネルです。操作の一覧は
 
 | 部 | スイッチ | エンコーダ | LED |
 |---|---|---|---|
-| 音色（preset/user・tone 1〜8・page・compare・initialize） | 13 | — | 12 |
+| 音色（preset（押すたびに preset/user）・tone 1〜8・page・compare・initialize） | 12 | — | 12 |
 | line ごと（DCx・波形 1/2（同時押しで key follow）・rate/level・sus・end）× 2 | 6 × 2 | 8 × 2 | 32 × 2 |
 | line select | 1 | — | 4 |
 | detune / vibrato | 3 | 3 | 7 |
-| **合計** | **29** | **19** | **87** |
+| **合計** | **28** | **19** | **87** |
 
-入力（スイッチ 29 ＋ エンコーダ 19 × 2 本 = **67 本**）は **MCP23017 × 5**、
+入力（スイッチ 28 ＋ エンコーダ 19 × 2 本 = **66 本**）は **MCP23017 × 5**、
 LED 87 個は **74HC595 × 10**（80 個）と MCP23017 の出力専用ピン 7 本に載せます。Pi 側の配線は I2C 2 本・SPI 3 本・INT 4 本・電源だけです。
 
 ### 部品
@@ -455,7 +455,7 @@ LED 87 個は **74HC595 × 10**（80 個）と MCP23017 の出力専用ピン 7 
 | MCP23017-E/SP（DIP-28） | 5 | 入力用。**3.3V で使う**。入力に使えるのは 1 個 14 本（計 70 本、3 本余り）、出力専用ピンは LED に |
 | 74HC595（U74HC595AG 等） | 10 | LED 用。**3.3V で使う**（計 80 出力、余りなし） |
 | ロータリーエンコーダ（ALPS 無段階など）＋ DIP 化基板（RECNV-3 等） | 19 | A/B/C の 3 本を使う |
-| タクトスイッチ | 29 | |
+| タクトスイッチ | 28 | |
 | LED ＋ 抵抗 1kΩ 前後 | 87 | |
 | 0.1µF セラミックコンデンサ | 15 | 各 IC の VCC–GND 間、足の近くに |
 
@@ -481,7 +481,7 @@ LED は 87 個ありますが同時に点くのは多くても 23 個（ほと�
 | 1 | 0x21 | line 2 のエンコーダ 1〜7 | GPIO12（物理 32） |
 | 2 | 0x22 | 両 line のエンコーダ 8、detune/vib エンコーダ 3 個、line 1 の field/sus/end、line select | GPIO16（物理 36） |
 | 3 | 0x23 | 両 line の DCx/波形 1/波形 2、line 2 の field/sus/end、vibrato のスイッチ 3 個 | GPIO24（物理 18）※ |
-| 4 | 0x24 | preset/user・tone 1〜8・page・compare・initialize | GPIO24 ※ |
+| 4 | 0x24 | preset（preset/user 切替）・tone 1〜8・page・compare・initialize | GPIO24 ※ |
 
 ※ チップ 3・4 はスイッチだけなので **INTA を 2 本まとめて GPIO24 に**繋ぎます（オープンドレインに
 設定されるので直結で安全）。エンコーダの載ったチップ 0〜2 は**それぞれ専用の INT 線**にしてあり、
@@ -620,7 +620,7 @@ ls /dev/spidev0.1        # SPI が有効なら存在する
 
 ./build/rtsynth --synth pd --lcd 0x27 --panel panels/pd_panel.conf -v param
 #   [panel] vibrato: the instrument has no parameter 'vibrato' ...   ← pd に vibrato が入るまで
-#   Panel: 5 of 5 MCP23017 on /dev/i2c-1, 19 encoders, 29 buttons, 87 LEDs
+#   Panel: 5 of 5 MCP23017 on /dev/i2c-1, 19 encoders, 28 buttons, 87 LEDs
 #          (10 x 74HC595 on /dev/spidev0.1), per-chip interrupts
 # line 1 のツマミ 3 を回す → [param] L1 DCO Rate 3 = ...
 ```
