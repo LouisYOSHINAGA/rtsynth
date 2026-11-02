@@ -316,7 +316,10 @@ bool Mcp23017Panel::scanChip(size_t c, int64_t now, bool* changed){
     }
     const uint16_t bits = static_cast<uint16_t>(bytes[0] | (bytes[1] << 8));
     if(changed != nullptr){
-        *changed = chips_[c].primed && bits != chips_[c].bits;
+        // only the configured inputs raise INT: a switch wired to a pin the
+        // config does not name yet changes the port silently, by design
+        const uint16_t watched = chips_[c].inputMask;
+        *changed = chips_[c].primed && (bits & watched) != (chips_[c].bits & watched);
     }
     processSnapshot(static_cast<int>(c), bits, now);
     return true;
