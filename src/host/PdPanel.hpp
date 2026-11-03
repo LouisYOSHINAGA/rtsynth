@@ -369,8 +369,9 @@ private:
 //            initialize     discard every edit to the current tone
 //   LEDs     preset, user   which bank the current tone is in
 //            page, tone1..tone8                 the current tone
-//            compare        lit while the tone is edited, blinking while
-//                           the original is being compared
+//            compare        lit while the edited tone plays, dark while
+//                           the original is being compared (and when
+//                           there is no edit to compare)
 //
 // The program numbers: preset N = N - 1, user N = the last 16 slots of the
 // bank. A Program Change from anywhere else (MIDI, preset-next) shows up
@@ -436,8 +437,7 @@ public:
         if(role == "compare"){
             return [this, on]{
                 if(!available()) return LedState::Off;
-                if(bank_->comparing()) return LedState::Blink;
-                return on(bank_->isEdited());
+                return on(!bank_->comparing() && bank_->isEdited());
             };
         }
         if(pdpanel::numbered(role, "tone", n) && n >= 1 && n <= kButtons){

@@ -1315,16 +1315,20 @@ int main(){
         press("compare");
         expect(compares == 1, "pd panel: compare is sent while edited");
         bank->toggleCompare();   // what the audio thread does with it
-        bool compareBlinks = false;
+        bool compareDark = true;
         for(int i = 0; i < 2 * PanelLogic::kBlinkTicks; i++){
             logic.poll();
-            compareBlinks |= !leds.on[53];
+            compareDark = compareDark && !leds.on[53];
         }
-        expect(compareBlinks, "pd panel: COMPARE blinks while the original plays");
+        expect(compareDark, "pd panel: COMPARE is dark while the original plays");
         press("compare");
-        press("initialize");
-        expect(compares == 2 && initializes == 1, "pd panel: compare back, then initialize");
+        expect(compares == 2, "pd panel: compare is sent again to go back to the edit");
         bank->toggleCompare();
+        logic.poll();
+        expect(leds.on[53] && params.byId("line1_dca_rate1")->getNormalized() == 0.123f,
+               "pd panel: back on the edit, COMPARE is lit again");
+        press("initialize");
+        expect(initializes == 1, "pd panel: initialize is sent");
 
         // detune / vibrato
         Parameter* oct = params.byId("detune_octave");
